@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "shopping-list",
-    "slug": "shopping-list",
+    "name": "MealMate",
+    "slug": "mealmate",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "shoppinglist",
+    "scheme": "mealmate",
     "userInterfaceStyle": "automatic",
     "splash": {
       "image": "./assets/images/splash-icon.png",
@@ -13,7 +13,12 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSCameraUsageDescription": "MealMate needs camera access to scan food products at the store.",
+        "NSPhotoLibraryUsageDescription": "MealMate needs photo library access to import food product images."
+      },
+      "bundleIdentifier": "com.anonymous.mealmate"
     },
     "android": {
       "adaptiveIcon": {
@@ -22,6 +27,11 @@
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
+      "permissions": [
+        "CAMERA",
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ],
       "predictiveBackGestureEnabled": false
     },
     "web": {
@@ -30,7 +40,20 @@
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
-      "expo-router"
+      "expo-router",
+      "expo-secure-store",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "MealMate needs camera access to scan food products."
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/icon.png"
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

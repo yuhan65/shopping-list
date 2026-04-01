@@ -1,70 +1,104 @@
-import React from 'react';
-import { SymbolView } from 'expo-symbols';
-import { Link, Tabs } from 'expo-router';
-import { Platform, Pressable } from 'react-native';
+/**
+ * Tab bar layout — defines the 4 main tabs of the app.
+ * Today (daily hub), Plan (weekly overview), Recipes (collection),
+ * and Provisions (shopping + pantry combined). Profile is
+ * accessible from other screens but hidden from the tab bar.
+ */
+import { Tabs } from 'expo-router';
+import { View, Text, StyleSheet } from 'react-native';
+import { useThemeColors } from '@/hooks/useColorScheme';
+import { FontSize, Spacing } from '@/constants/Spacing';
 
-import Colors from '@/constants/Colors';
-import { useColorScheme } from '@/components/useColorScheme';
-import { useClientOnlyValue } from '@/components/useClientOnlyValue';
+function TabLabel({ label, focused }: { label: string; focused: boolean }) {
+  const colors = useThemeColors();
+  return (
+    <View style={tabStyles.labelContainer}>
+      <Text
+        numberOfLines={1}
+        style={[
+          tabStyles.label,
+          { color: focused ? colors.tint : colors.tabIconDefault },
+        ]}
+      >
+        {label}
+      </Text>
+      {focused && (
+        <View style={[tabStyles.dot, { backgroundColor: colors.tint }]} />
+      )}
+    </View>
+  );
+}
+
+const tabStyles = StyleSheet.create({
+  labelContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    minWidth: 60,
+  },
+  label: {
+    fontSize: FontSize.xs,
+    fontWeight: '500',
+    letterSpacing: 1.2,
+    textTransform: 'uppercase',
+    textAlign: 'center',
+  },
+  dot: {
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+  },
+});
 
 export default function TabLayout() {
-  const colorScheme = useColorScheme();
+  const colors = useThemeColors();
 
   return (
     <Tabs
       screenOptions={{
-        tabBarActiveTintColor: Colors[colorScheme].tint,
-        // Disable the static render of the header on web
-        // to prevent a hydration error in React Navigation v6.
-        headerShown: useClientOnlyValue(false, true),
-      }}>
+        tabBarShowLabel: false,
+        tabBarStyle: {
+          backgroundColor: colors.background,
+          borderTopColor: colors.border,
+          borderTopWidth: StyleSheet.hairlineWidth,
+          height: 70,
+          paddingTop: Spacing.sm,
+        },
+        headerShown: false,
+      }}
+    >
       <Tabs.Screen
         name="index"
         options={{
-          title: 'Tab One',
-          tabBarIcon: ({ color }) => (
-            <SymbolView
-              name={{
-                ios: 'chevron.left.forwardslash.chevron.right',
-                android: 'code',
-                web: 'code',
-              }}
-              tintColor={color}
-              size={28}
-            />
-          ),
-          headerRight: () => (
-            <Link href="/modal" asChild>
-              <Pressable style={{ marginRight: 15 }}>
-                {({ pressed }) => (
-                  <SymbolView
-                    name={{ ios: 'info.circle', android: 'info', web: 'info' }}
-                    size={25}
-                    tintColor={Colors[colorScheme].text}
-                    style={{ opacity: pressed ? 0.5 : 1 }}
-                  />
-                )}
-              </Pressable>
-            </Link>
-          ),
+          tabBarIcon: ({ focused }) => <TabLabel label="Today" focused={focused} />,
         }}
       />
       <Tabs.Screen
-        name="two"
+        name="plan"
         options={{
-          title: 'Tab Two',
-          tabBarIcon: ({ color }) => (
-            <SymbolView
-              name={{
-                ios: 'chevron.left.forwardslash.chevron.right',
-                android: 'code',
-                web: 'code',
-              }}
-              tintColor={color}
-              size={28}
-            />
-          ),
+          tabBarIcon: ({ focused }) => <TabLabel label="Plan" focused={focused} />,
         }}
+      />
+      <Tabs.Screen
+        name="recipes"
+        options={{
+          tabBarIcon: ({ focused }) => <TabLabel label="Recipes" focused={focused} />,
+        }}
+      />
+      <Tabs.Screen
+        name="shopping"
+        options={{
+          tabBarIcon: ({ focused }) => <TabLabel label="Provisions" focused={focused} />,
+        }}
+      />
+      {/* Pantry route is kept as a redirect for backwards compatibility */}
+      <Tabs.Screen
+        name="pantry"
+        options={{ href: null }}
+      />
+      <Tabs.Screen
+        name="profile"
+        options={{ href: null }}
       />
     </Tabs>
   );
