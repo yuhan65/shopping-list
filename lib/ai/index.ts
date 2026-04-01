@@ -30,4 +30,11 @@ export function createAIService(): AIService {
 }
 
 export type { AIService } from './types';
-export type { AIRecipeResult, AIFoodAnalysis, AIQuantityRecommendation, AIMealPlanResult } from './types';
+export type {
+  AIRecipeResult,
+  AIFoodAnalysis,
+  AIQuantityRecommendation,
+  AIMealPlanResult,
+  AIMealPlanParams,
+  AIMealPlanMeal,
+} from './types';

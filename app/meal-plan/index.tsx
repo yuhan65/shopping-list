@@ -6,12 +6,22 @@ import { Spacing, FontSize, FontFamily, BorderRadius } from '@/constants/Spacing
 import { Button, Card, EmptyState, Icon } from '@/components/ui';
 import { useAuthStore } from '@/stores/authStore';
 import { useLocalDataStore } from '@/stores/localDataStore';
+import { useRecipePreviewStore } from '@/stores/recipePreviewStore';
 import { useSupabaseQuery } from '@/hooks/useSupabaseQuery';
 import { supabase } from '@/lib/supabase';
 import { mealTitle } from '@/lib/mealTitle';
 import { createAIService } from '@/lib/ai';
 import { useQueryClient } from '@tanstack/react-query';
-import type { Recipe, MealPlan, MealPlanItem, BodyGoal, Ingredient, PantryItem } from '@/types/database';
+import type {
+  Recipe,
+  MealPlan,
+  MealPlanItem,
+  BodyGoal,
+  Ingredient,
+  PantryItem,
+  Profile,
+  GeneratedRecipeDraft,
+} from '@/types/database';
 
 const DAYS: { key: string; label: string }[] = [
   { key: 'monday', label: 'Monday' },
@@ -38,10 +48,12 @@ export default function MealPlanScreen() {
   const localInsert = useLocalDataStore((s) => s.insert);
   const localUpdate = useLocalDataStore((s) => s.update);
   const localQuery = useLocalDataStore((s) => s.query);
+  const setPreviewDraft = useRecipePreviewStore((s) => s.setDraft);
   const queryClient = useQueryClient();
 
   const [generating, setGenerating] = useState(false);
   const [generatingList, setGeneratingList] = useState(false);
+  const [savingMealItemId, setSavingMealItemId] = useState<string | null>(null);
 
   const { data: recipes } = useSupabaseQuery<Recipe>(['recipes'], 'recipes', {
     filter: { user_id: user?.id },
@@ -52,6 +64,16 @@ export default function MealPlanScreen() {
     limit: 1,
   });
   const goal = goals?.[0];
+
+  const { data: profiles } = useSupabaseQuery<Profile>(['profile'], 'profiles', {
+    filter: { user_id: user?.id },
+    limit: 1,
+  });
+  const profile = profiles?.[0];
+
+  const { data: pantryItems } = useSupabaseQuery<PantryItem>(['pantry_items'], 'pantry_items', {
+    filter: { user_id: user?.id },
+  });
 
   const { data: plans } = useSupabaseQuery<MealPlan>(['meal_plans'], 'meal_plans', {
     filter: { user_id: user?.id },
@@ -70,6 +92,47 @@ export default function MealPlanScreen() {
     }
   );
 
+  function normalizeGeneratedRecipe(value: unknown): GeneratedRecipeDraft | null {
+    if (!value || typeof value !== 'object') return null;
+    const recipe = value as any;
+    if (typeof recipe.title !== 'string' || !Array.isArray(recipe.ingredients) || !Array.isArray(recipe.instructions)) {
+      return null;
+    }
+
+    return {
+      title: recipe.title,
+      description: typeof recipe.description === 'string' ? recipe.description : null,
+      ingredients: recipe.ingredients,
+      instructions: recipe.instructions,
+      servings: typeof recipe.servings === 'number' ? recipe.servings : 1,
+      prep_time_minutes: typeof recipe.prep_time_minutes === 'number' ? recipe.prep_time_minutes : null,
+      cook_time_minutes: typeof recipe.cook_time_minutes === 'number' ? recipe.cook_time_minutes : null,
+      calories_per_serving: typeof recipe.calories_per_serving === 'number' ? recipe.calories_per_serving : null,
+      protein_per_serving: typeof recipe.protein_per_serving === 'number' ? recipe.protein_per_serving : null,
+      carbs_per_serving: typeof recipe.carbs_per_serving === 'number' ? recipe.carbs_per_serving : null,
+      fat_per_serving: typeof recipe.fat_per_serving === 'number' ? recipe.fat_per_serving : null,
+      tags: Array.isArray(recipe.tags) ? recipe.tags : [],
+    };
+  }
+
+  function scoreRecipe(recipe: Recipe, pantryNames: string[], dietaryPrefs: string[]): number {
+    const tags = (recipe.tags || []).map((tag) => tag.toLowerCase());
+    const pantrySet = new Set(pantryNames.map((item) => item.toLowerCase()));
+    const prefSet = new Set(dietaryPrefs.map((item) => item.toLowerCase()));
+    const ingredientHits = (recipe.ingredients || []).filter((ing) =>
+      pantrySet.has(String(ing.name || '').toLowerCase())
+    ).length;
+    const preferenceHits = tags.filter((tag) => prefSet.has(tag)).length;
+    const macroCoverage =
+      recipe.calories_per_serving != null &&
+      recipe.protein_per_serving != null &&
+      recipe.carbs_per_serving != null &&
+      recipe.fat_per_serving != null
+        ? 1
+        : 0;
+    return ingredientHits * 4 + preferenceHits * 3 + macroCoverage;
+  }
+
   async function generateMealPlan() {
     if (!recipes || recipes.length === 0) {
       Alert.alert('No Recipes', 'Please add some recipes first before generating a meal plan.');
@@ -86,8 +149,10 @@ export default function MealPlanScreen() {
     setGenerating(true);
     try {
       const ai = createAIService();
-      const result = await ai.generateMealPlan({
-        recipes: recipes.map((r) => ({
+      const pantryNames = (pantryItems || []).map((item) => item.name);
+      const dietaryPreferences = profile?.dietary_restrictions || [];
+      const rankedRecipes = recipes
+        .map((r) => ({
           id: r.id,
           title: r.title,
           calories: r.calories_per_serving,
@@ -95,12 +160,19 @@ export default function MealPlanScreen() {
           carbs: r.carbs_per_serving,
           fat: r.fat_per_serving,
           tags: r.tags || [],
-        })),
+          priority_score: scoreRecipe(r, pantryNames, dietaryPreferences),
+        }))
+        .sort((a, b) => b.priority_score - a.priority_score);
+
+      const result = await ai.generateMealPlan({
+        recipes: rankedRecipes,
         dailyCalories: goal.daily_calories,
         proteinG: goal.protein_g,
         carbsG: goal.carbs_g,
         fatG: goal.fat_g,
-        dietaryRestrictions: [],
+        dietaryRestrictions: profile?.dietary_restrictions || [],
+        dietaryPreferences,
+        pantryIngredients: pantryNames,
         daysToGenerate: 7,
       });
 
@@ -145,15 +217,41 @@ export default function MealPlanScreen() {
         newPlanId = newPlan.id;
       }
 
-      const items = result.days.flatMap((day) =>
-        day.meals.map((meal) => ({
-          meal_plan_id: newPlanId,
-          recipe_id: meal.recipe_id,
-          day_of_week: day.day,
-          meal_type: meal.meal_type,
-          servings: meal.servings,
-        }))
-      );
+      const items = result.days
+        .flatMap((day) =>
+          day.meals.map((meal: any): Record<string, unknown> | null => {
+            const sourceType: 'db' | 'generated' =
+              meal.source_type === 'generated' ? 'generated' : 'db';
+
+            if (sourceType === 'db') {
+              if (!meal.recipe_id) return null;
+              return {
+                meal_plan_id: newPlanId,
+                recipe_id: meal.recipe_id,
+                source_type: 'db',
+                generated_recipe: null,
+                generated_title: null,
+                day_of_week: day.day,
+                meal_type: meal.meal_type,
+                servings: meal.servings,
+              };
+            }
+
+            const generatedRecipe = normalizeGeneratedRecipe(meal.generated_recipe);
+            if (!generatedRecipe) return null;
+            return {
+              meal_plan_id: newPlanId,
+              recipe_id: null,
+              source_type: 'generated',
+              generated_recipe: generatedRecipe,
+              generated_title: generatedRecipe.title,
+              day_of_week: day.day,
+              meal_type: meal.meal_type,
+              servings: meal.servings,
+            };
+          })
+        )
+        .filter((item): item is Record<string, unknown> => item !== null);
 
       if (isDemoMode) {
         items.forEach((item) => localInsert('meal_plan_items', item));
@@ -173,6 +271,71 @@ export default function MealPlanScreen() {
     }
   }
 
+  async function saveGeneratedRecipe(item: MealPlanItem) {
+    const generatedRecipe = item.generated_recipe;
+    if (!generatedRecipe || !user) return;
+    setSavingMealItemId(item.id);
+
+    const recipeRow = {
+      user_id: user.id,
+      title: generatedRecipe.title,
+      description: generatedRecipe.description,
+      source_url: null,
+      source_type: 'ai',
+      ingredients: generatedRecipe.ingredients,
+      instructions: generatedRecipe.instructions,
+      servings: generatedRecipe.servings,
+      prep_time_minutes: generatedRecipe.prep_time_minutes,
+      cook_time_minutes: generatedRecipe.cook_time_minutes,
+      calories_per_serving: generatedRecipe.calories_per_serving,
+      protein_per_serving: generatedRecipe.protein_per_serving,
+      carbs_per_serving: generatedRecipe.carbs_per_serving,
+      fat_per_serving: generatedRecipe.fat_per_serving,
+      tags: generatedRecipe.tags,
+    };
+
+    try {
+      let newRecipeId: string;
+      if (isDemoMode) {
+        newRecipeId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+        localInsert('recipes', { ...recipeRow, id: newRecipeId });
+        localUpdate('meal_plan_items', item.id, {
+          source_type: 'db',
+          recipe_id: newRecipeId,
+          generated_recipe: null,
+          generated_title: null,
+        });
+      } else {
+        const { data, error } = await supabase
+          .from('recipes')
+          .insert(recipeRow)
+          .select()
+          .single();
+        if (error) throw error;
+        newRecipeId = data.id;
+
+        const { error: updateError } = await supabase
+          .from('meal_plan_items')
+          .update({
+            source_type: 'db',
+            recipe_id: newRecipeId,
+            generated_recipe: null,
+            generated_title: null,
+          })
+          .eq('id', item.id);
+        if (updateError) throw updateError;
+      }
+
+      await queryClient.invalidateQueries({ queryKey: ['recipes'] });
+      await queryClient.invalidateQueries({ queryKey: ['meal_plan_items'] });
+      Alert.alert('Saved', `"${generatedRecipe.title}" is now in your recipes.`);
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Could not save generated recipe.');
+    } finally {
+      setSavingMealItemId(null);
+    }
+  }
+
   async function generateShoppingList() {
     if (!activePlan || !planItems || planItems.length === 0) return;
     setGeneratingList(true);
@@ -188,15 +351,19 @@ export default function MealPlanScreen() {
 
       for (const item of planItems) {
         const recipe = item.recipe as unknown as Recipe;
-        if (!recipe?.ingredients) continue;
-
-        const ingredients: Ingredient[] = Array.isArray(recipe.ingredients) ? recipe.ingredients : [];
+        const generated = item.generated_recipe;
+        const ingredients: Ingredient[] = Array.isArray(recipe?.ingredients)
+          ? recipe.ingredients
+          : Array.isArray(generated?.ingredients)
+            ? generated.ingredients
+            : [];
+        if (ingredients.length === 0) continue;
 
         for (const ing of ingredients) {
           const key = `${normalize(ing.name)}_${normalize(ing.unit)}`;
           if (ingredientMap[key]) {
             ingredientMap[key].quantity += ing.quantity * item.servings;
-            if (!ingredientMap[key].recipeIds.includes(item.recipe_id)) {
+            if (item.recipe_id && !ingredientMap[key].recipeIds.includes(item.recipe_id)) {
               ingredientMap[key].recipeIds.push(item.recipe_id);
             }
           } else {
@@ -205,7 +372,7 @@ export default function MealPlanScreen() {
               quantity: ing.quantity * item.servings,
               unit: ing.unit,
               category: ing.category || 'other',
-              recipeIds: [item.recipe_id],
+              recipeIds: item.recipe_id ? [item.recipe_id] : [],
             };
           }
         }
@@ -215,7 +382,7 @@ export default function MealPlanScreen() {
       // Build a pantry quantity map so shopping list becomes a delta.
       let pantryRows: PantryItem[] = [];
       if (isDemoMode) {
-        pantryRows = (localQuery('pantry_items', { user_id: user!.id }) as PantryItem[]) ?? [];
+        pantryRows = (localQuery('pantry_items', { user_id: user!.id }) as unknown as PantryItem[]) ?? [];
       } else {
         const { data, error } = await supabase
           .from('pantry_items')
@@ -350,26 +517,53 @@ export default function MealPlanScreen() {
                 <Text style={[styles.dayTitle, { color: colors.text }]}>{label}</Text>
                 {dayMeals.map((meal) => {
                   const recipe = meal.recipe as unknown as Recipe;
+                  const generated = meal.generated_recipe;
+                  const mealName = recipe?.title || generated?.title || meal.generated_title || 'Generated meal';
+                  const caloriesPerServing = recipe?.calories_per_serving ?? generated?.calories_per_serving;
                   return (
-                    <TouchableOpacity
-                      key={meal.id}
-                      onPress={() => router.push(`/recipe/${meal.recipe_id}` as any)}
-                    >
-                      <Card style={styles.mealCard}>
+                    <Card key={meal.id} style={styles.mealCard}>
+                      <TouchableOpacity
+                        disabled={!meal.recipe_id && !generated}
+                        onPress={() => {
+                          if (meal.recipe_id) {
+                            router.push(`/recipe/${meal.recipe_id}` as any);
+                            return;
+                          }
+                          if (generated) {
+                            setPreviewDraft(
+                              {
+                                ...generated,
+                                description: generated.description ?? '',
+                              },
+                              'ai'
+                            );
+                            router.push('/recipe/preview' as any);
+                          }
+                        }}
+                      >
                         <Text style={[styles.mealType, { color: colors.tint }]}>
                           {MEAL_LABELS[meal.meal_type] || meal.meal_type}
+                          {meal.source_type === 'generated' ? ' · AI Draft' : ''}
                         </Text>
                         <Text style={[styles.mealTitle, { color: colors.text }]}>
-                          {mealTitle(recipe)}
+                          {meal.recipe_id ? mealTitle(recipe) : mealName}
                         </Text>
                         <Text style={[styles.mealMeta, { color: colors.textSecondary }]}>
                           {meal.servings} serving{meal.servings !== 1 ? 's' : ''}
-                          {recipe?.calories_per_serving
-                            ? ` · ${Math.round(recipe.calories_per_serving * meal.servings)} kcal`
-                            : ''}
+                          {caloriesPerServing ? ` · ${Math.round(caloriesPerServing * meal.servings)} kcal` : ''}
                         </Text>
-                      </Card>
-                    </TouchableOpacity>
+                      </TouchableOpacity>
+                      {meal.source_type === 'generated' && generated && (
+                        <Button
+                          title={savingMealItemId === meal.id ? 'Saving...' : 'Save Recipe'}
+                          onPress={() => saveGeneratedRecipe(meal)}
+                          loading={savingMealItemId === meal.id}
+                          size="sm"
+                          variant="outline"
+                          style={{ marginTop: Spacing.sm }}
+                        />
+                      )}
+                    </Card>
                   );
                 })}
               </View>

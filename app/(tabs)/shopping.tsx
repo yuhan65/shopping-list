@@ -134,7 +134,7 @@ export default function ShoppingScreen() {
     const cleanExpiry = params.expiryDate?.trim() || null;
 
     if (isDemoMode) {
-      const localRows = (localQuery('pantry_items', { user_id: user!.id }) as PantryItem[]) ?? [];
+      const localRows = (localQuery('pantry_items', { user_id: user!.id }) as unknown as PantryItem[]) ?? [];
       const existing = localRows.find(
         (p) => normalize(p.name) === normalize(cleanName) && normalize(p.unit) === normalize(cleanUnit)
       );

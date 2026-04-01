@@ -10,6 +10,7 @@ import {
   AIFoodAnalysis,
   AIQuantityRecommendation,
   AIMealPlanResult,
+  AIMealPlanParams,
 } from './types';
 
 const API_KEY = process.env.EXPO_PUBLIC_AI_API_KEY ?? '';
@@ -285,25 +286,66 @@ export class GeminiService implements AIService {
     return parseJSON<AIQuantityRecommendation>(result);
   }
 
-  async generateMealPlan(params: {
-    recipes: { id: string; title: string; calories: number | null; protein: number | null; carbs: number | null; fat: number | null; tags: string[] }[];
-    dailyCalories: number;
-    proteinG: number;
-    carbsG: number;
-    fatG: number;
-    dietaryRestrictions: string[];
-    daysToGenerate: number;
-    lockedMeals?: { day: string; meal_type: string; recipe_id: string }[];
-  }): Promise<AIMealPlanResult> {
+  async generateMealPlan(params: AIMealPlanParams): Promise<AIMealPlanResult> {
     const days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'].slice(0, params.daysToGenerate);
+    const dietaryPreferences = params.dietaryPreferences?.join(', ') || 'none';
+    const pantryIngredients = params.pantryIngredients?.join(', ') || 'none';
     const messages: AIMessage[] = [
       {
         role: 'system',
-        content: `You are a meal planning assistant. Create a meal plan using ONLY the provided recipes. Target approximately ${params.dailyCalories} calories/day with macros: ${params.proteinG}g protein, ${params.carbsG}g carbs, ${params.fatG}g fat. Respect dietary restrictions: ${params.dietaryRestrictions.join(', ') || 'none'}. Return JSON with a "days" array, each containing "day" (string) and "meals" array with {meal_type, recipe_id, servings}. Vary recipes across days. Each day should have breakfast, lunch, dinner, and optionally a snack.`,
+        content: `You are a meal planning assistant. Create a weekly plan that can mix saved recipes and new generated meals.
+
+Target approximately ${params.dailyCalories} calories/day with macros: ${params.proteinG}g protein, ${params.carbsG}g carbs, ${params.fatG}g fat.
+Dietary restrictions (must obey): ${params.dietaryRestrictions.join(', ') || 'none'}.
+Dietary preferences (try to favor): ${dietaryPreferences}.
+Pantry ingredients to prioritize where possible: ${pantryIngredients}.
+
+IMPORTANT PRIORITY RULES:
+1) Prefer saved database recipes when they are a good fit.
+2) Use generated meals only when they better fit constraints, pantry usage, or variety.
+3) If recipes include priority_score, treat higher scores as stronger preference.
+
+Return strict JSON with this shape:
+{
+  "days": [
+    {
+      "day": "monday",
+      "meals": [
+        {
+          "meal_type": "breakfast|lunch|dinner|snack",
+          "source_type": "db",
+          "recipe_id": "uuid",
+          "servings": 1
+        },
+        {
+          "meal_type": "breakfast|lunch|dinner|snack",
+          "source_type": "generated",
+          "servings": 1,
+          "generated_recipe": {
+            "title": "string",
+            "description": "string",
+            "ingredients": [{"name":"string","quantity":1,"unit":"string","category":"other"}],
+            "instructions": ["step 1", "step 2"],
+            "servings": 1,
+            "prep_time_minutes": 15,
+            "cook_time_minutes": 20,
+            "calories_per_serving": 500,
+            "protein_per_serving": 30,
+            "carbs_per_serving": 50,
+            "fat_per_serving": 15,
+            "tags": ["high protein"]
+          }
+        }
+      ]
+    }
+  ]
+}
+
+Each day should have breakfast, lunch, dinner, and optionally a snack. Keep variety across the week.`,
       },
       {
         role: 'user',
-        content: `Available recipes:\n${JSON.stringify(params.recipes)}\n\nGenerate a plan for: ${days.join(', ')}\n${params.lockedMeals?.length ? `Keep these meals locked: ${JSON.stringify(params.lockedMeals)}` : ''}`,
+        content: `Saved DB recipes:\n${JSON.stringify(params.recipes)}\n\nGenerate a plan for: ${days.join(', ')}\n${params.lockedMeals?.length ? `Keep these meals locked: ${JSON.stringify(params.lockedMeals)}` : ''}`,
       },
     ];
     const result = await callAPI(messages);

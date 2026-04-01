@@ -45,12 +45,59 @@ export interface AIQuantityRecommendation {
 export interface AIMealPlanResult {
   days: {
     day: string;
-    meals: {
+    meals: AIMealPlanMeal[];
+  }[];
+}
+
+export interface AIMealPlanGeneratedRecipe {
+  title: string;
+  description: string;
+  ingredients: { name: string; quantity: number; unit: string; category?: string }[];
+  instructions: string[];
+  servings: number;
+  prep_time_minutes: number | null;
+  cook_time_minutes: number | null;
+  calories_per_serving: number | null;
+  protein_per_serving: number | null;
+  carbs_per_serving: number | null;
+  fat_per_serving: number | null;
+  tags: string[];
+}
+
+export type AIMealPlanMeal =
+  | {
       meal_type: 'breakfast' | 'lunch' | 'dinner' | 'snack';
+      source_type: 'db';
       recipe_id: string;
       servings: number;
-    }[];
+    }
+  | {
+      meal_type: 'breakfast' | 'lunch' | 'dinner' | 'snack';
+      source_type: 'generated';
+      servings: number;
+      generated_recipe: AIMealPlanGeneratedRecipe;
+    };
+
+export interface AIMealPlanParams {
+  recipes: {
+    id: string;
+    title: string;
+    calories: number | null;
+    protein: number | null;
+    carbs: number | null;
+    fat: number | null;
+    tags: string[];
+    priority_score?: number;
   }[];
+  dailyCalories: number;
+  proteinG: number;
+  carbsG: number;
+  fatG: number;
+  dietaryRestrictions: string[];
+  dietaryPreferences?: string[];
+  pantryIngredients?: string[];
+  daysToGenerate: number;
+  lockedMeals?: { day: string; meal_type: string; recipe_id: string }[];
 }
 
 export interface AIService {
@@ -61,16 +108,7 @@ export interface AIService {
     analysis: AIFoodAnalysis,
     shoppingListItem: { name: string; quantity: number; unit: string }
   ): Promise<AIQuantityRecommendation>;
-  generateMealPlan(params: {
-    recipes: { id: string; title: string; calories: number | null; protein: number | null; carbs: number | null; fat: number | null; tags: string[] }[];
-    dailyCalories: number;
-    proteinG: number;
-    carbsG: number;
-    fatG: number;
-    dietaryRestrictions: string[];
-    daysToGenerate: number;
-    lockedMeals?: { day: string; meal_type: string; recipe_id: string }[];
-  }): Promise<AIMealPlanResult>;
+  generateMealPlan(params: AIMealPlanParams): Promise<AIMealPlanResult>;
   suggestSubstitution(params: {
     ingredient: string;
     reason: string;

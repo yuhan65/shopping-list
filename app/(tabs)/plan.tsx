@@ -11,6 +11,7 @@ import { Spacing, FontSize, FontFamily, BorderRadius } from '@/constants/Spacing
 import { AccentColors } from '@/constants/Colors';
 import { Card, Button, DotLegend } from '@/components/ui';
 import { useAuthStore } from '@/stores/authStore';
+import { useRecipePreviewStore } from '@/stores/recipePreviewStore';
 import { useSupabaseQuery } from '@/hooks/useSupabaseQuery';
 import { mealTitle } from '@/lib/mealTitle';
 import type { MealPlan, MealPlanItem, BodyGoal, Profile, Recipe, PantryItem } from '@/types/database';
@@ -49,6 +50,7 @@ export default function PlanScreen() {
   const colors = useThemeColors();
   const router = useRouter();
   const user = useAuthStore((s) => s.user);
+  const setPreviewDraft = useRecipePreviewStore((s) => s.setDraft);
 
   const { data: profiles } = useSupabaseQuery<Profile>(['profile'], 'profiles', {
     filter: { user_id: user?.id },
@@ -296,18 +298,36 @@ export default function PlanScreen() {
 
       {upcomingMeals.map((item) => {
         const recipe = item.recipe as unknown as Recipe;
-        const cals = Math.round((recipe?.calories_per_serving ?? 0) * item.servings);
+        const generated = item.generated_recipe;
+        const cals = Math.round(((recipe?.calories_per_serving ?? generated?.calories_per_serving ?? 0) * item.servings));
         const dayLabel = DAYS.find((d) => d.key === item.day_of_week)?.short ?? '';
+        const title = recipe?.title || generated?.title || item.generated_title || 'Generated meal';
         return (
           <TouchableOpacity
             key={item.id}
             style={[styles.mealRow, { borderBottomColor: colors.border }]}
-            onPress={() => router.push(`/recipe/${item.recipe_id}` as any)}
+            onPress={() => {
+              if (item.recipe_id) {
+                router.push(`/recipe/${item.recipe_id}` as any);
+                return;
+              }
+              if (generated) {
+                setPreviewDraft(
+                  {
+                    ...generated,
+                    description: generated.description ?? '',
+                  },
+                  'ai'
+                );
+                router.push('/recipe/preview' as any);
+              }
+            }}
+            disabled={!item.recipe_id && !generated}
           >
             <View style={[styles.mealRowDot, { backgroundColor: dotColorForRecipe(recipe) }]} />
             <View style={styles.mealRowInfo}>
               <Text style={[styles.mealRowTitle, { color: colors.text }]}>
-                {mealTitle(recipe)}
+                {item.recipe_id ? mealTitle(recipe) : title}
               </Text>
             </View>
             <View style={styles.mealRowMeta}>

@@ -1,7 +1,7 @@
 /**
  * Profile screen — opened as a modal from the Today tab header icon.
  * Contains body stats, goals, dietary preferences, health objectives,
- * pantry management link, and AI preference insights.
+ * provisions management link, and AI preference insights.
  * Previously the "Body" tab — now demoted to a modal since it's
  * set-once, check-occasionally (daily macros are visible on Today).
  */
@@ -254,16 +254,16 @@ export default function ProfileScreen() {
         style={styles.updateBtn}
       />
 
-      {/* Pantry Management */}
+      {/* Provisions shortcut */}
       <View style={styles.section}>
-        <Text style={[styles.sectionLabel, { color: colors.text }]}>PANTRY</Text>
+        <Text style={[styles.sectionLabel, { color: colors.text }]}>PROVISIONS</Text>
         <TouchableOpacity
           style={[styles.menuItem, { borderBottomColor: colors.border }]}
-          onPress={() => router.push('/pantry' as any)}
+          onPress={() => router.push('/(tabs)/shopping' as any)}
         >
           <Icon name="cube" size={20} color={colors.tint} />
           <View style={{ flex: 1 }}>
-            <Text style={[styles.menuLabel, { color: colors.text }]}>Manage Pantry</Text>
+            <Text style={[styles.menuLabel, { color: colors.text }]}>Manage Provisions</Text>
             <Text style={[styles.menuDesc, { color: colors.textSecondary }]}>
               {pantryItems?.length ?? 0} items in stock
             </Text>

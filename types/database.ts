@@ -59,6 +59,21 @@ export interface Ingredient {
   category?: string;
 }
 
+export interface GeneratedRecipeDraft {
+  title: string;
+  description: string | null;
+  ingredients: Ingredient[];
+  instructions: string[];
+  servings: number;
+  prep_time_minutes: number | null;
+  cook_time_minutes: number | null;
+  calories_per_serving: number | null;
+  protein_per_serving: number | null;
+  carbs_per_serving: number | null;
+  fat_per_serving: number | null;
+  tags: string[];
+}
+
 export interface Recipe {
   id: string;
   user_id: string;
@@ -94,10 +109,13 @@ export interface MealPlan {
 export interface MealPlanItem {
   id: string;
   meal_plan_id: string;
-  recipe_id: string;
+  recipe_id: string | null;
   day_of_week: DayOfWeek;
   meal_type: MealType;
   servings: number;
+  source_type: 'db' | 'generated';
+  generated_recipe: GeneratedRecipeDraft | null;
+  generated_title: string | null;
   recipe?: Recipe;
 }
 

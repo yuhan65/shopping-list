@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Image, ScrollView, Alert, ActivityIndicator } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
 import { useThemeColors } from '@/hooks/useColorScheme';
@@ -18,6 +18,7 @@ import type { AIFoodAnalysis, AIQuantityRecommendation } from '@/lib/ai';
 export default function CameraScreen() {
   const colors = useThemeColors();
   const router = useRouter();
+  const { mode } = useLocalSearchParams<{ mode?: string }>();
   const user = useAuthStore((s) => s.user);
   const isDemoMode = useAuthStore((s) => s.isDemoMode);
   const localUpdate = useLocalDataStore((s) => s.update);
@@ -30,6 +31,8 @@ export default function CameraScreen() {
   const [analysis, setAnalysis] = useState<AIFoodAnalysis | null>(null);
   const [recommendation, setRecommendation] = useState<AIQuantityRecommendation | null>(null);
   const [matchedItem, setMatchedItem] = useState<ShoppingListItem | null>(null);
+  const cameraMode = mode || 'product';
+  const isReceiptMode = cameraMode === 'receipt';
 
   const { data: lists } = useSupabaseQuery<ShoppingList>(['shopping_lists'], 'shopping_lists', {
     filter: { user_id: user?.id, status: 'active' },
@@ -147,7 +150,9 @@ export default function CameraScreen() {
           <TouchableOpacity onPress={resetCamera}>
             <Icon name="arrow-left" size={24} color={colors.text} />
           </TouchableOpacity>
-          <Text style={[styles.topTitle, { color: colors.text }]}>Analysis</Text>
+          <Text style={[styles.topTitle, { color: colors.text }]}>
+            {isReceiptMode ? 'Receipt Scan' : 'Product Scan'}
+          </Text>
           <TouchableOpacity onPress={() => router.back()}>
             <Icon name="x-mark" size={24} color={colors.text} />
           </TouchableOpacity>
@@ -159,7 +164,9 @@ export default function CameraScreen() {
           {analyzing && (
             <View style={styles.analyzingContainer}>
               <ActivityIndicator size="large" color={colors.tint} />
-              <Text style={[styles.analyzingText, { color: colors.text }]}>Analyzing product...</Text>
+              <Text style={[styles.analyzingText, { color: colors.text }]}>
+                {isReceiptMode ? 'Analyzing receipt...' : 'Analyzing product...'}
+              </Text>
             </View>
           )}
 
@@ -216,7 +223,9 @@ export default function CameraScreen() {
             <Card style={[styles.recCard, { borderColor: colors.tint }]}>
               <View style={styles.recHeader}>
                 <Icon name="shopping-cart" size={20} color={colors.tint} />
-                <Text style={[styles.recTitle, { color: colors.tint }]}>Recommendation</Text>
+                <Text style={[styles.recTitle, { color: colors.tint }]}>
+                  {isReceiptMode ? 'Detected Item' : 'Recommendation'}
+                </Text>
               </View>
               <Text style={[styles.recQuantity, { color: colors.text }]}>
                 Buy {recommendation.recommended_quantity} package{recommendation.recommended_quantity !== 1 ? 's' : ''}
@@ -224,14 +233,20 @@ export default function CameraScreen() {
               <Text style={[styles.recReasoning, { color: colors.textSecondary }]}>
                 {recommendation.reasoning}
               </Text>
-              <Button title="Mark as Purchased" onPress={markPurchased} style={{ marginTop: Spacing.md }} />
+              <Button
+                title={isReceiptMode ? 'Add to Provisions' : 'Mark as Purchased'}
+                onPress={markPurchased}
+                style={{ marginTop: Spacing.md }}
+              />
             </Card>
           )}
 
           {analysis && !matchedItem && (
             <Card>
               <Text style={[styles.noMatch, { color: colors.textSecondary }]}>
-                This product doesn't match any items on your current shopping list.
+                {isReceiptMode
+                  ? "Couldn't match this receipt item to your list. You can still add it manually."
+                  : "This product doesn't match any items on your current shopping list."}
               </Text>
             </Card>
           )}
@@ -251,7 +266,9 @@ export default function CameraScreen() {
           </View>
           <View style={styles.cameraGuide}>
             <View style={[styles.guideBorder, { borderColor: 'rgba(255,255,255,0.5)' }]} />
-            <Text style={styles.guideText}>Point at a food product</Text>
+            <Text style={styles.guideText}>
+              {isReceiptMode ? 'Point at a full receipt' : 'Point at a food product'}
+            </Text>
           </View>
           <View style={styles.cameraBottom}>
             <TouchableOpacity onPress={pickImage} style={styles.galleryBtn}>
