@@ -13,11 +13,6 @@ import { GeminiService } from './gemini';
 export function createAIService(): AIService {
   const provider = process.env.EXPO_PUBLIC_AI_PROVIDER ?? 'openai';
 
-  // #region agent log
-  console.log('[DEBUG-8fb698] createAIService provider=' + provider + ' hasKey=' + !!process.env.EXPO_PUBLIC_AI_API_KEY + ' model=' + process.env.EXPO_PUBLIC_AI_MODEL);
-  fetch('http://127.0.0.1:7940/ingest/ae36240b-e3cc-4d35-bffd-8b7ab31fcc2a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a856e8'},body:JSON.stringify({sessionId:'a856e8',location:'ai/index.ts:createAIService',message:'Provider selected',data:{provider,hasKey:!!process.env.EXPO_PUBLIC_AI_API_KEY,model:process.env.EXPO_PUBLIC_AI_MODEL,apiBase:process.env.EXPO_PUBLIC_AI_API_BASE},timestamp:Date.now(),hypothesisId:'H4'})}).catch(()=>{});
-  // #endregion
-
   if (provider === 'gemini') {
     return new GeminiService();
   }

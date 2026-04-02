@@ -1,8 +1,6 @@
 /**
- * Anthropic (Claude) AI service. Translates our app's AI calls into
- * Anthropic's Messages API format, which differs from OpenAI's.
- * Anthropic uses: POST https://api.anthropic.com/v1/messages
- * with an x-api-key header (not Bearer token).
+ * Purpose: Anthropic (Claude) AI service facade for app screens.
+ * Actual provider requests are sent through the ai-chat edge function.
  */
 import {
   AIService,
@@ -13,142 +11,10 @@ import {
   AIMealPlanResult,
   AIMealPlanParams,
 } from './types';
-
-const API_KEY = process.env.EXPO_PUBLIC_AI_API_KEY ?? '';
-const MODEL = process.env.EXPO_PUBLIC_AI_MODEL ?? 'claude-sonnet-4-20250514';
-const API_URL = 'https://api.anthropic.com/v1/messages';
-const AI_TIMEOUT_MS = 90_000;
-
-function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: number): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer));
-}
-
-/**
- * Convert our generic AIMessage format into Anthropic's format.
- * Key differences from OpenAI:
- *   - system message is a top-level param, not in the messages array
- *   - images use { type: "image", source: { type: "base64", ... } }
- *     instead of { type: "image_url", image_url: { url: "data:..." } }
- */
-function convertMessages(messages: AIMessage[]): {
-  system: string | undefined;
-  anthropicMessages: { role: 'user' | 'assistant'; content: any }[];
-} {
-  let system: string | undefined;
-  const anthropicMessages: { role: 'user' | 'assistant'; content: any }[] = [];
-
-  for (const msg of messages) {
-    if (msg.role === 'system') {
-      system = typeof msg.content === 'string' ? msg.content : '';
-      continue;
-    }
-
-    if (typeof msg.content === 'string') {
-      anthropicMessages.push({ role: msg.role as 'user' | 'assistant', content: msg.content });
-      continue;
-    }
-
-    // Convert multimodal content parts
-    const parts: any[] = [];
-    for (const part of msg.content) {
-      if (part.type === 'text') {
-        parts.push({ type: 'text', text: part.text });
-      } else if (part.type === 'image_url') {
-        // Extract base64 data from "data:image/jpeg;base64,..." URL
-        const url = part.image_url.url;
-        const match = url.match(/^data:(image\/\w+);base64,(.+)$/);
-        if (match) {
-          parts.push({
-            type: 'image',
-            source: {
-              type: 'base64',
-              media_type: match[1],
-              data: match[2],
-            },
-          });
-        }
-      }
-    }
-    anthropicMessages.push({ role: msg.role as 'user' | 'assistant', content: parts });
-  }
-
-  return { system, anthropicMessages };
-}
+import { callAIThroughEdge } from './edgeClient';
 
 async function callAPI(messages: AIMessage[]): Promise<string> {
-  if (!API_KEY) {
-    throw new Error('AI API key is not configured. Check your .env file for EXPO_PUBLIC_AI_API_KEY.');
-  }
-
-  const { system, anthropicMessages } = convertMessages(messages);
-
-  console.log('[AI] Calling Anthropic API, model:', MODEL);
-
-  // #region agent log
-  const _dbgStart = Date.now();
-  const _dbgBodyLen = JSON.stringify(messages).length;
-  fetch('http://127.0.0.1:7940/ingest/ae36240b-e3cc-4d35-bffd-8b7ab31fcc2a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a856e8'},body:JSON.stringify({sessionId:'a856e8',location:'anthropic.ts:callAPI',message:'AI call started',data:{model:MODEL,hasKey:!!API_KEY,keyPrefix:API_KEY?.slice(0,8),msgCount:messages.length,bodyLen:_dbgBodyLen,timeoutMs:AI_TIMEOUT_MS},timestamp:Date.now(),hypothesisId:'H1,H3,H4'})}).catch(()=>{});
-  // #endregion
-
-  let response: Response;
-  try {
-    const body: any = {
-      model: MODEL,
-      messages: anthropicMessages,
-      max_tokens: 8000,
-    };
-    if (system) {
-      body.system = system;
-    }
-
-    response = await fetchWithTimeout(
-      API_URL,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': API_KEY,
-          'anthropic-version': '2023-06-01',
-          'anthropic-dangerous-direct-browser-access': 'true',
-        },
-        body: JSON.stringify(body),
-      },
-      AI_TIMEOUT_MS,
-    );
-  } catch (err: any) {
-    // #region agent log
-    const _dbgElapsed = Date.now() - _dbgStart;
-    fetch('http://127.0.0.1:7940/ingest/ae36240b-e3cc-4d35-bffd-8b7ab31fcc2a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a856e8'},body:JSON.stringify({sessionId:'a856e8',location:'anthropic.ts:callAPI:catch',message:'AI call FAILED',data:{errName:err.name,errMsg:err.message,elapsedMs:_dbgElapsed,bodyLen:_dbgBodyLen,isAbort:err.name==='AbortError'},timestamp:Date.now(),hypothesisId:'H1,H2,H5'})}).catch(()=>{});
-    // #endregion
-    if (err.name === 'AbortError') {
-      throw new Error('The AI took too long to respond. Please try again.');
-    }
-    throw new Error('Could not reach the AI service. Check your internet connection.');
-  }
-
-  // #region agent log
-  const _dbgResElapsed = Date.now() - _dbgStart;
-  fetch('http://127.0.0.1:7940/ingest/ae36240b-e3cc-4d35-bffd-8b7ab31fcc2a',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a856e8'},body:JSON.stringify({sessionId:'a856e8',location:'anthropic.ts:callAPI:response',message:'AI call got response',data:{status:response.status,ok:response.ok,elapsedMs:_dbgResElapsed},timestamp:Date.now(),hypothesisId:'H1,H3'})}).catch(()=>{});
-  // #endregion
-
-  if (!response.ok) {
-    const body = await response.text().catch(() => '');
-    console.warn('[AI] Error response:', response.status, body);
-    throw new Error(`AI request failed (${response.status}). Try again in a moment.`);
-  }
-
-  const data = await response.json();
-
-  // Anthropic returns content as an array of blocks
-  const textBlock = data.content?.find((block: any) => block.type === 'text');
-  if (!textBlock?.text) {
-    console.warn('[AI] Unexpected response shape:', JSON.stringify(data).slice(0, 500));
-    throw new Error('The AI returned an empty response. Please try again.');
-  }
-
-  return textBlock.text;
+  return callAIThroughEdge(messages, { provider: 'anthropic' });
 }
 
 function parseJSON<T>(text: string): T {

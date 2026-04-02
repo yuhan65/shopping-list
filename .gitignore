@@ -33,6 +33,7 @@ yarn-error.*
 # local env files — never commit secrets
 .env
 .env*.local
+.cursor/*.log
 
 # typescript
 *.tsbuildinfo

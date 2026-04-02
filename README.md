@@ -19,7 +19,7 @@ AI-powered meal planning and shopping list app built with React Native (Expo) an
 |-------|-----------|
 | Frontend | React Native, Expo SDK 55, Expo Router, TypeScript |
 | Backend | Supabase (Postgres, Auth, Storage, Edge Functions) |
-| AI | OpenAI GPT-4o (swappable via service abstraction) |
+| AI | Gemini / Anthropic / OpenAI via Supabase Edge Function |
 | State | TanStack Query (server), Zustand (local) |
 
 ## Getting Started
@@ -45,14 +45,15 @@ npm install
 cp .env.example .env
 ```
 
-Edit `.env` with your Supabase URL, anon key, and AI API key.
+Edit `.env` with your Supabase URL, anon key, AI provider, and model.
+Do not put real AI keys in `.env` for the app.
 
 3. **Set up the database**
 
 Run the migration in `supabase/migrations/001_initial_schema.sql` against your Supabase project:
 - Go to Supabase Dashboard > SQL Editor > paste and run the migration
 
-4. **Deploy Edge Functions** (optional, for server-side recipe import)
+4. **Deploy Edge Functions** (required for AI calls)
 
 ```bash
 supabase functions deploy recipe-import
@@ -61,7 +62,19 @@ supabase functions deploy ai-chat
 
 Set secrets on your Supabase project:
 ```bash
-supabase secrets set AI_API_KEY=your-openai-key AI_API_BASE=https://api.openai.com/v1 AI_MODEL=gpt-4o
+supabase secrets set AI_API_KEY=your-provider-key AI_MODEL=gemini-2.5-flash-lite
+```
+
+Optional provider-specific secrets (recommended if you switch providers often):
+```bash
+supabase secrets set GEMINI_API_KEY=your-gemini-key
+supabase secrets set ANTHROPIC_API_KEY=your-anthropic-key
+supabase secrets set OPENAI_API_KEY=your-openai-key
+```
+
+Optional for OpenAI-compatible providers (for example OpenRouter):
+```bash
+supabase secrets set AI_API_BASE=https://api.openai.com/v1
 ```
 
 5. **Start the app**
@@ -104,6 +117,6 @@ supabase/
 |----------|------------|
 | `EXPO_PUBLIC_SUPABASE_URL` | Your Supabase project URL |
 | `EXPO_PUBLIC_SUPABASE_ANON_KEY` | Your Supabase anon/public key |
-| `EXPO_PUBLIC_AI_API_BASE` | AI API base URL (default: OpenAI) |
-| `EXPO_PUBLIC_AI_API_KEY` | Your AI provider API key |
-| `EXPO_PUBLIC_AI_MODEL` | Model name (default: `gpt-4o`) |
+| `EXPO_PUBLIC_AI_API_BASE` | Optional OpenAI-compatible base URL routing value |
+| `EXPO_PUBLIC_AI_MODEL` | Model name (default: `gemini-2.5-flash-lite`) |
+| `EXPO_PUBLIC_AI_PROVIDER` | AI provider routing value (`gemini`, `anthropic`, `openai`) |
