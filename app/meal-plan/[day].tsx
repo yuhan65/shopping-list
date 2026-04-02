@@ -3,7 +3,7 @@
  * Displays per-meal macro breakdown, daily total, calorie alerts,
  * and AI-suggested meal swaps when the day is over target.
  */
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useThemeColors } from '@/hooks/useColorScheme';
@@ -15,9 +15,10 @@ import { useLocalDataStore } from '@/stores/localDataStore';
 import { useRecipePreviewStore } from '@/stores/recipePreviewStore';
 import { useSupabaseQuery } from '@/hooks/useSupabaseQuery';
 import { mealTitle } from '@/lib/mealTitle';
+import { minimumSafeCalories } from '@/lib/tdee';
 import { supabase } from '@/lib/supabase';
 import { useQueryClient } from '@tanstack/react-query';
-import type { MealPlan, MealPlanItem, BodyGoal, Recipe } from '@/types/database';
+import type { MealPlan, MealPlanItem, BodyGoal, Recipe, MealFeedback } from '@/types/database';
 
 const DAY_NAMES: Record<string, string> = {
   monday: 'Monday',
@@ -47,6 +48,7 @@ export default function DayDetailScreen() {
   const localUpdate = useLocalDataStore((s) => s.update);
   const setPreviewDraft = useRecipePreviewStore((s) => s.setDraft);
   const queryClient = useQueryClient();
+  const [feedbackBusyId, setFeedbackBusyId] = useState<string | null>(null);
 
   const { data: goals } = useSupabaseQuery<BodyGoal>(['body_goals'], 'body_goals', {
     filter: { user_id: user?.id },
@@ -91,7 +93,7 @@ export default function DayDetailScreen() {
     return { cals: Math.round(cals), protein: Math.round(protein), carbs: Math.round(carbs), fat: Math.round(fat) };
   }, [dayMeals]);
 
-  const targetCals = goal?.daily_calories ?? 2000;
+  const targetCals = Math.max(goal?.daily_calories ?? 2000, minimumSafeCalories());
   const overBy = totals.cals > targetCals ? Math.round(((totals.cals - targetCals) / targetCals) * 100) : 0;
   const isOnTrack = overBy === 0 && totals.cals > 0;
   const dayName = DAY_NAMES[day ?? ''] ?? day;
@@ -165,6 +167,48 @@ export default function DayDetailScreen() {
       await queryClient.invalidateQueries({ queryKey: ['meal_plan_items'] });
     } catch {
       // Keep UX simple on this detail screen; failed save just leaves the CTA.
+    }
+  }
+
+  async function addMealFeedback(item: MealPlanItem, feedbackType: MealFeedback['feedback_type'], reason?: string) {
+    if (!user) return;
+    setFeedbackBusyId(item.id);
+    const feedbackRow = {
+      meal_plan_item_id: item.id,
+      user_id: user.id,
+      feedback_type: feedbackType,
+      reason: reason || null,
+    };
+    const signalRow = {
+      user_id: user.id,
+      signal_type:
+        feedbackType === 'liked' || feedbackType === 'cooked'
+          ? 'recipe_like'
+          : feedbackType === 'skipped'
+            ? 'meal_skipped'
+            : feedbackType === 'swapped'
+              ? 'meal_swapped_out'
+              : 'recipe_dislike',
+      entity_type: 'meal_plan_item',
+      entity_key: item.id,
+      weight: 1,
+      metadata: { reason: reason || null },
+    };
+
+    try {
+      if (isDemoMode) {
+        localInsert('meal_feedback', feedbackRow);
+        localInsert('user_preference_signals', signalRow);
+      } else {
+        const { error: feedbackError } = await supabase.from('meal_feedback').insert(feedbackRow);
+        if (feedbackError) throw feedbackError;
+        const { error: signalError } = await supabase.from('user_preference_signals').insert(signalRow);
+        if (signalError) throw signalError;
+      }
+      queryClient.invalidateQueries({ queryKey: ['meal_feedback'] });
+      queryClient.invalidateQueries({ queryKey: ['user_preference_signals'] });
+    } finally {
+      setFeedbackBusyId(null);
     }
   }
 
@@ -278,6 +322,29 @@ export default function DayDetailScreen() {
                   <Text style={[styles.saveBtnText, { color: colors.tint }]}>SAVE RECIPE</Text>
                 </TouchableOpacity>
               )}
+              <View style={styles.feedbackRow}>
+                <TouchableOpacity
+                  style={[styles.feedbackChip, { borderColor: colors.border }]}
+                  disabled={feedbackBusyId === item.id}
+                  onPress={() => addMealFeedback(item, 'liked')}
+                >
+                  <Text style={[styles.feedbackText, { color: colors.text }]}>Like</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.feedbackChip, { borderColor: colors.border }]}
+                  disabled={feedbackBusyId === item.id}
+                  onPress={() => addMealFeedback(item, 'disliked', "don't like taste")}
+                >
+                  <Text style={[styles.feedbackText, { color: colors.text }]}>Dislike</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.feedbackChip, { borderColor: colors.border }]}
+                  disabled={feedbackBusyId === item.id}
+                  onPress={() => addMealFeedback(item, 'swapped', 'swapped for another option')}
+                >
+                  <Text style={[styles.feedbackText, { color: colors.text }]}>Swap</Text>
+                </TouchableOpacity>
+              </View>
             </View>
           );
         })}
@@ -376,6 +443,14 @@ const styles = StyleSheet.create({
   mealMacroText: { fontSize: FontSize.xs, letterSpacing: 0.3 },
   saveBtn: { marginTop: Spacing.sm, alignSelf: 'flex-start' },
   saveBtnText: { fontSize: FontSize.xs, fontWeight: '700', letterSpacing: 1 },
+  feedbackRow: { flexDirection: 'row', gap: Spacing.xs, marginTop: Spacing.sm },
+  feedbackChip: {
+    borderWidth: 1,
+    borderRadius: BorderRadius.full,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 4,
+  },
+  feedbackText: { fontSize: FontSize.xs, fontWeight: '600' },
 
   // Footer
   dailyFooter: {

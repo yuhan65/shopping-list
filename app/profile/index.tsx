@@ -1,11 +1,11 @@
 /**
  * Profile screen — opened as a modal from the Today tab header icon.
  * Contains body stats, goals, dietary preferences, health objectives,
- * provisions management link, and AI preference insights.
+ * stock management link, and AI preference insights.
  * Previously the "Body" tab — now demoted to a modal since it's
  * set-once, check-occasionally (daily macros are visible on Today).
  */
-import React, { useState, useMemo } from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -16,17 +16,18 @@ import {
   Switch,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
 import { useThemeColors } from '@/hooks/useColorScheme';
 import { MacroColors } from '@/constants/Colors';
-import { Spacing, FontSize, FontFamily, BorderRadius } from '@/constants/Spacing';
-import { Card, DonutChart, BarChart, TagChip, Button, Icon } from '@/components/ui';
+import { Spacing, FontSize, FontFamily } from '@/constants/Spacing';
+import { Card, DonutChart, TagChip, Button, Icon } from '@/components/ui';
 import { useAuthStore } from '@/stores/authStore';
-import { useLocalDataStore } from '@/stores/localDataStore';
 import { useSupabaseQuery } from '@/hooks/useSupabaseQuery';
 import { supabase } from '@/lib/supabase';
+import { minimumSafeCalories } from '@/lib/tdee';
+import { useLocalDataStore } from '@/stores/localDataStore';
 import { useQueryClient } from '@tanstack/react-query';
-import type { Profile, BodyGoal, BodyLog, HealthObjective, PantryItem } from '@/types/database';
+import { formatHeightFromCm, formatHydrationFromMl, formatWeightFromKg } from '@/lib/units';
+import type { Profile, BodyGoal, BodyLog, HealthObjective, MeasurementSystem } from '@/types/database';
 
 const HEALTH_OBJECTIVES: { key: HealthObjective; label: string }[] = [
   { key: 'longevity', label: 'Longevity' },
@@ -50,6 +51,7 @@ export default function ProfileScreen() {
   const user = useAuthStore((s) => s.user);
   const isDemoMode = useAuthStore((s) => s.isDemoMode);
   const queryClient = useQueryClient();
+  const localUpsert = useLocalDataStore((s) => s.upsert);
 
   const { data: profiles } = useSupabaseQuery<Profile>(['profile'], 'profiles', {
     filter: { user_id: user?.id },
@@ -62,6 +64,7 @@ export default function ProfileScreen() {
     limit: 1,
   });
   const goal = goals?.[0];
+  const displayedDailyCalories = goal ? Math.max(goal.daily_calories, minimumSafeCalories()) : null;
 
   const { data: bodyLogs } = useSupabaseQuery<BodyLog>(['body_logs'], 'body_logs', {
     filter: { user_id: user?.id },
@@ -69,22 +72,10 @@ export default function ProfileScreen() {
     limit: 30,
   });
 
-  const { data: pantryItems } = useSupabaseQuery<PantryItem>(
-    ['pantry_items'],
-    'pantry_items',
-    { filter: { user_id: user?.id } }
-  );
-
+  const measurementSystem: MeasurementSystem = profile?.measurement_system ?? 'imperial';
   const latestWeight = bodyLogs?.[0]?.weight_kg;
-  const weightDisplay = latestWeight ? `${Math.round(latestWeight * 2.205)} lbs` : '--';
-
-  const weightChartData = useMemo(() => {
-    if (!bodyLogs || bodyLogs.length === 0) return [];
-    return [...bodyLogs].reverse().map((log) => ({
-      label: new Date(log.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-      value: log.weight_kg,
-    }));
-  }, [bodyLogs]);
+  const weightDisplay = formatWeightFromKg(latestWeight, measurementSystem, { decimals: 0 });
+  const heightDisplay = formatHeightFromCm(profile?.height_cm, measurementSystem);
 
   const [dietToggles, setDietToggles] = useState<Record<string, boolean>>(() => {
     const restrictions = profile?.dietary_restrictions || [];
@@ -134,39 +125,65 @@ export default function ProfileScreen() {
     ]);
   }
 
-  const hydrationTarget = goal?.hydration_ml ? (goal.hydration_ml / 1000).toFixed(1) : '3.0';
+  const hydrationTarget = formatHydrationFromMl(goal?.hydration_ml, measurementSystem);
+
+  async function handleMeasurementSystemChange(nextSystem: MeasurementSystem) {
+    if (!user || !profile || nextSystem === measurementSystem) return;
+    try {
+      if (isDemoMode) {
+        localUpsert('profiles', { ...profile, measurement_system: nextSystem });
+      } else {
+        const { error } = await supabase
+          .from('profiles')
+          .update({ measurement_system: nextSystem })
+          .eq('id', profile.id);
+        if (error) throw error;
+      }
+      await queryClient.invalidateQueries({ queryKey: ['profile', user.id] });
+    } catch (err: any) {
+      Alert.alert('Could not update units', err.message ?? 'Please try again.');
+    }
+  }
 
   return (
     <ScrollView
       style={[styles.container, { backgroundColor: colors.background }]}
       contentContainerStyle={styles.content}
     >
-      {/* Top bar */}
-      <View style={styles.topBar}>
-        <TouchableOpacity onPress={() => router.back()}>
-          <Icon name="arrow-left" size={24} color={colors.text} />
-        </TouchableOpacity>
-        <Text style={[styles.topTitle, { color: colors.text }]}>Profile & Goals</Text>
-        <View style={{ width: 24 }} />
-      </View>
-
       {/* Headline */}
       <Text style={[styles.headline, { color: colors.text }]}>
         Your biology — Optimized at {weightDisplay}
       </Text>
+
+      {/* Body stats */}
+      <View style={styles.section}>
+        <Text style={[styles.sectionLabel, { color: colors.text }]}>BODY STATS</Text>
+        <View style={styles.statsRow}>
+          <Card style={styles.statCard}>
+            <Text style={[styles.statLabel, { color: colors.textSecondary }]}>CURRENT WEIGHT</Text>
+            <Text style={[styles.statValue, { color: colors.text }]}>
+              {formatWeightFromKg(latestWeight, measurementSystem, { decimals: 1 })}
+            </Text>
+          </Card>
+          <Card style={styles.statCard}>
+            <Text style={[styles.statLabel, { color: colors.textSecondary }]}>HEIGHT</Text>
+            <Text style={[styles.statValue, { color: colors.text }]}>{heightDisplay}</Text>
+          </Card>
+        </View>
+      </View>
 
       {/* Daily Nutrition Targets */}
       <View style={styles.targetsRow}>
         <Card style={styles.targetCard}>
           <Text style={[styles.targetLabel, { color: colors.textSecondary }]}>CALORIES</Text>
           <Text style={[styles.targetValue, { color: colors.text }]}>
-            {goal?.daily_calories?.toLocaleString() || '--'}
+            {displayedDailyCalories?.toLocaleString() || '--'}
           </Text>
           <Text style={[styles.targetUnit, { color: colors.textSecondary }]}>KCAL TARGET</Text>
         </Card>
         <Card style={styles.targetCard}>
           <Text style={[styles.targetLabel, { color: colors.textSecondary }]}>HYDRATION</Text>
-          <Text style={[styles.targetValue, { color: colors.text }]}>{hydrationTarget}L</Text>
+          <Text style={[styles.targetValue, { color: colors.text }]}>{hydrationTarget}</Text>
           <Text style={[styles.targetUnit, { color: colors.textSecondary }]}>WATER INTAKE</Text>
         </Card>
       </View>
@@ -191,24 +208,35 @@ export default function ProfileScreen() {
         </View>
       )}
 
-      {/* Weight History */}
-      {weightChartData.length > 0 && (
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Text style={[styles.sectionLabel, { color: colors.text }]}>WEIGHT HISTORY</Text>
-            <Text style={[styles.sectionMeta, { color: colors.textSecondary }]}>
-              LAST {weightChartData.length} DAYS
-            </Text>
-          </View>
-          <BarChart
-            data={weightChartData}
-            barColor={colors.text}
-            height={100}
-            footnote={latestWeight ? `Current: ${latestWeight} kg` : undefined}
-            footnoteColor={colors.textSecondary}
-          />
+      {/* Measurement units */}
+      <View style={styles.section}>
+        <Text style={[styles.sectionLabel, { color: colors.text }]}>MEASUREMENT UNITS</Text>
+        <View style={styles.unitSegmentRow}>
+          {([
+            { key: 'imperial', label: 'Imperial (lbs, ft, oz)' },
+            { key: 'metric', label: 'Metric (kg, m, L)' },
+          ] as { key: MeasurementSystem; label: string }[]).map((option) => {
+            const selected = measurementSystem === option.key;
+            return (
+              <TouchableOpacity
+                key={option.key}
+                onPress={() => handleMeasurementSystemChange(option.key)}
+                style={[
+                  styles.unitSegment,
+                  {
+                    backgroundColor: selected ? colors.tint : colors.surfaceSecondary,
+                    borderColor: selected ? colors.tint : colors.border,
+                  },
+                ]}
+              >
+                <Text style={[styles.unitSegmentText, { color: selected ? '#FFF' : colors.text }]}>
+                  {option.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
         </View>
-      )}
+      </View>
 
       {/* Dietary Preferences */}
       <View style={styles.section}>
@@ -254,24 +282,6 @@ export default function ProfileScreen() {
         style={styles.updateBtn}
       />
 
-      {/* Provisions shortcut */}
-      <View style={styles.section}>
-        <Text style={[styles.sectionLabel, { color: colors.text }]}>PROVISIONS</Text>
-        <TouchableOpacity
-          style={[styles.menuItem, { borderBottomColor: colors.border }]}
-          onPress={() => router.push('/(tabs)/shopping' as any)}
-        >
-          <Icon name="cube" size={20} color={colors.tint} />
-          <View style={{ flex: 1 }}>
-            <Text style={[styles.menuLabel, { color: colors.text }]}>Manage Provisions</Text>
-            <Text style={[styles.menuDesc, { color: colors.textSecondary }]}>
-              {pantryItems?.length ?? 0} items in stock
-            </Text>
-          </View>
-          <Icon name="chevron-right" size={16} color={colors.textSecondary} />
-        </TouchableOpacity>
-      </View>
-
       {/* Quick links */}
       <View style={styles.section}>
         <Text style={[styles.sectionLabel, { color: colors.text }]}>TRACKING</Text>
@@ -301,15 +311,7 @@ export default function ProfileScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  content: { padding: Spacing.lg, paddingTop: 50, paddingBottom: 100 },
-
-  topBar: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: Spacing.lg,
-  },
-  topTitle: { fontSize: FontSize.lg, fontWeight: '600' },
+  content: { padding: Spacing.lg, paddingTop: 60, paddingBottom: 100 },
 
   headline: {
     fontSize: FontSize.xxl,
@@ -331,14 +333,22 @@ const styles = StyleSheet.create({
   },
 
   section: { marginBottom: Spacing.lg },
-  sectionHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: Spacing.sm,
-  },
   sectionLabel: { fontSize: FontSize.xs, fontWeight: '700', letterSpacing: 1.5, marginBottom: Spacing.sm },
-  sectionMeta: { fontSize: FontSize.xs },
+  unitSegmentRow: { flexDirection: 'row', gap: Spacing.sm },
+  unitSegment: {
+    flex: 1,
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.sm,
+    alignItems: 'center',
+  },
+  unitSegmentText: { fontSize: FontSize.xs, fontWeight: '600', textAlign: 'center' },
+
+  statsRow: { flexDirection: 'row', gap: Spacing.md },
+  statCard: { flex: 1, paddingVertical: Spacing.md, alignItems: 'center' },
+  statLabel: { fontSize: FontSize.xs, fontWeight: '700', letterSpacing: 1 },
+  statValue: { fontSize: FontSize.lg, fontWeight: '600', marginTop: 4 },
 
   toggleRow: {
     flexDirection: 'row',
@@ -362,7 +372,6 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
   menuLabel: { flex: 1, fontSize: FontSize.md },
-  menuDesc: { fontSize: FontSize.xs, marginTop: 1 },
 
   signOut: { alignItems: 'center', paddingVertical: Spacing.md },
   signOutText: { fontSize: FontSize.sm, fontWeight: '500' },

@@ -13,6 +13,23 @@ export type HealthObjective =
   | 'inflammation_reduction'
   | 'performance';
 
+export type CookingEffort = 'low' | 'medium' | 'high';
+export type SpiceTolerance = 'mild' | 'medium' | 'hot';
+export type RepeatTolerance = 'low' | 'medium' | 'high';
+export type BudgetSensitivity = 'low' | 'medium' | 'high';
+export type MeasurementSystem = 'metric' | 'imperial';
+
+export type PreferenceSignalType =
+  | 'onboarding_like'
+  | 'recipe_like'
+  | 'recipe_dislike'
+  | 'meal_swapped_out'
+  | 'meal_swapped_in'
+  | 'meal_cooked'
+  | 'meal_skipped'
+  | 'recipe_saved'
+  | 'manual_recipe_import';
+
 export interface Profile {
   id: string;
   user_id: string;
@@ -21,8 +38,19 @@ export interface Profile {
   activity_level: 'sedentary' | 'light' | 'moderate' | 'active' | 'very_active';
   dietary_restrictions: string[];
   health_objectives: HealthObjective[];
+  preferred_cuisines: string[];
+  disliked_ingredients: string[];
+  favorite_proteins: string[];
+  cooking_effort: CookingEffort;
+  prep_time_preference_minutes: number;
+  weekday_cooking_time: string;
+  spice_tolerance: SpiceTolerance;
+  repeat_tolerance: RepeatTolerance;
+  budget_sensitivity: BudgetSensitivity;
+  equipment_constraints: string[];
   location: string | null;
   household_size: number;
+  measurement_system: MeasurementSystem;
   created_at: string;
   updated_at: string;
 }
@@ -203,5 +231,38 @@ export interface PlanAdjustment {
   suggested_recipe_id: string;
   reason: string;
   status: 'pending' | 'accepted' | 'dismissed';
+  created_at: string;
+}
+
+export interface UserPreferenceSignal {
+  id: string;
+  user_id: string;
+  signal_type: PreferenceSignalType;
+  entity_type: 'recipe' | 'ingredient' | 'cuisine' | 'tag' | 'meal_plan_item' | 'cooking_effort';
+  entity_key: string;
+  weight: number;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface UserTasteProfile {
+  id: string;
+  user_id: string;
+  ingredient_scores: Record<string, number>;
+  cuisine_scores: Record<string, number>;
+  tag_scores: Record<string, number>;
+  effort_preference: CookingEffort;
+  spice_preference: SpiceTolerance;
+  variety_preference: RepeatTolerance;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MealFeedback {
+  id: string;
+  meal_plan_item_id: string;
+  user_id: string;
+  feedback_type: 'liked' | 'disliked' | 'swapped' | 'cooked' | 'skipped';
+  reason: string | null;
   created_at: string;
 }

@@ -29,6 +29,12 @@ export default function RecipePreviewScreen() {
 
   const validSourceType = useMemo(() => sourceType ?? 'ai', [sourceType]);
 
+  function closePreviewAndClearDraft() {
+    router.back();
+    // Clear after navigation starts so we don't flash the empty preview state.
+    setTimeout(() => clearDraft(), 0);
+  }
+
   if (!draft) {
     return (
       <View style={[styles.emptyContainer, { backgroundColor: colors.background }]}>
@@ -70,9 +76,8 @@ export default function RecipePreviewScreen() {
         if (error) throw error;
       }
       queryClient.invalidateQueries({ queryKey: ['recipes'] });
-      clearDraft();
       Alert.alert('Saved', `"${draft.title}" has been added to your recipes.`, [
-        { text: 'OK', onPress: () => router.back() },
+        { text: 'OK', onPress: closePreviewAndClearDraft },
       ]);
     } catch (err: any) {
       Alert.alert('Error', err.message ?? 'Could not save recipe.');
@@ -82,8 +87,7 @@ export default function RecipePreviewScreen() {
   }
 
   function handleReject() {
-    clearDraft();
-    router.back();
+    closePreviewAndClearDraft();
   }
 
   return (

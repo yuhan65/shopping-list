@@ -179,7 +179,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.lg,
     marginBottom: Spacing.md,
   },
-  title: { fontSize: FontSize.xxl, fontFamily: FontFamily.serifBold },
+  title: { fontSize: FontSize.xxl, fontFamily: FontFamily.serifRegular, lineHeight: 34 },
   addButton: {
     width: 40,
     height: 40,

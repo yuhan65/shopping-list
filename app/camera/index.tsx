@@ -1,19 +1,19 @@
-import React, { useState, useRef } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Image, ScrollView, Alert, ActivityIndicator } from 'react-native';
-import { useRouter, useLocalSearchParams } from 'expo-router';
-import { CameraView, useCameraPermissions } from 'expo-camera';
-import * as ImagePicker from 'expo-image-picker';
-import { useThemeColors } from '@/hooks/useColorScheme';
-import { Spacing, FontSize, FontFamily, BorderRadius } from '@/constants/Spacing';
 import { Button, Card, Icon } from '@/components/ui';
+import { BorderRadius, FontFamily, FontSize, Spacing } from '@/constants/Spacing';
+import { useThemeColors } from '@/hooks/useColorScheme';
+import { useSupabaseQuery } from '@/hooks/useSupabaseQuery';
+import type { AIFoodAnalysis, AIQuantityRecommendation } from '@/lib/ai';
+import { createAIService } from '@/lib/ai';
+import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
 import { useLocalDataStore } from '@/stores/localDataStore';
-import { useSupabaseQuery } from '@/hooks/useSupabaseQuery';
-import { supabase } from '@/lib/supabase';
-import { createAIService } from '@/lib/ai';
-import { useQueryClient } from '@tanstack/react-query';
 import type { ShoppingList, ShoppingListItem } from '@/types/database';
-import type { AIFoodAnalysis, AIQuantityRecommendation } from '@/lib/ai';
+import { useQueryClient } from '@tanstack/react-query';
+import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as ImagePicker from 'expo-image-picker';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import React, { useRef, useState } from 'react';
+import { ActivityIndicator, Alert, Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 export default function CameraScreen() {
   const colors = useThemeColors();
@@ -234,7 +234,7 @@ export default function CameraScreen() {
                 {recommendation.reasoning}
               </Text>
               <Button
-                title={isReceiptMode ? 'Add to Provisions' : 'Mark as Purchased'}
+                title={isReceiptMode ? 'Add to Stock' : 'Mark as Purchased'}
                 onPress={markPurchased}
                 style={{ marginTop: Spacing.md }}
               />

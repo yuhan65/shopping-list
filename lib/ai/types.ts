@@ -95,6 +95,14 @@ export interface AIMealPlanParams {
   fatG: number;
   dietaryRestrictions: string[];
   dietaryPreferences?: string[];
+  preferredCuisines?: string[];
+  dislikedIngredients?: string[];
+  favoriteProteins?: string[];
+  cookingEffort?: 'low' | 'medium' | 'high';
+  prepTimeTargetMinutes?: number;
+  spiceTolerance?: 'mild' | 'medium' | 'hot';
+  repeatTolerance?: 'low' | 'medium' | 'high';
+  budgetSensitivity?: 'low' | 'medium' | 'high';
   pantryIngredients?: string[];
   daysToGenerate: number;
   lockedMeals?: { day: string; meal_type: string; recipe_id: string }[];

@@ -1,5 +1,5 @@
 /**
- * Provisions tab — combines shopping and pantry into one workflow.
+ * Stock tab — combines shopping and pantry into one workflow.
  * This screen shows what to buy and what is already in stock.
  */
 import React, { useCallback, useMemo, useState } from 'react';
@@ -15,24 +15,17 @@ import { useLocalDataStore } from '@/stores/localDataStore';
 import { useSupabaseQuery } from '@/hooks/useSupabaseQuery';
 import { supabase } from '@/lib/supabase';
 import { useQueryClient } from '@tanstack/react-query';
+import {
+  SHOPPING_CATEGORIES,
+  CATEGORY_COLORS,
+  LEGACY_CATEGORY_MAP,
+  classifyIngredient,
+} from '@/lib/shoppingHelpers';
 import type { ShoppingList, ShoppingListItem, PantryItem } from '@/types/database';
 
-const AISLE_LABELS: Record<string, string> = {
-  produce: 'Aisle 1: Produce',
-  dairy: 'Aisle 7: Dairy',
-  meat: 'Aisle 5: Meat & Poultry',
-  seafood: 'Aisle 4: Seafood & Proteins',
-  bakery: 'Aisle 2: Bakery',
-  frozen: 'Aisle 8: Frozen',
-  canned: 'Aisle 3: Canned Goods',
-  dry_goods: 'Aisle 6: Dry Goods & Pasta',
-  condiments: 'Aisle 9: Condiments & Sauces',
-  beverages: 'Aisle 10: Beverages',
-  snacks: 'Aisle 11: Snacks',
-  other: 'Other',
-};
-
 export default function ShoppingScreen() {
+  type AddFlowMode = 'choose' | 'quick';
+
   const colors = useThemeColors();
   const router = useRouter();
   const user = useAuthStore((s) => s.user);
@@ -42,11 +35,14 @@ export default function ShoppingScreen() {
   const localQuery = useLocalDataStore((s) => s.query);
   const queryClient = useQueryClient();
   const [showAddOverlay, setShowAddOverlay] = useState(false);
+  const [addFlowMode, setAddFlowMode] = useState<AddFlowMode>('choose');
   const [addName, setAddName] = useState('');
   const [addQuantity, setAddQuantity] = useState('1');
   const [addUnit, setAddUnit] = useState('unit');
   const [addExpiryDate, setAddExpiryDate] = useState('');
   const [adding, setAdding] = useState(false);
+  // Tracks which broad-category sections are collapsed (hidden).
+  const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
 
   // Force-refresh shopping data every time this tab becomes visible,
   // so newly generated shopping lists show up immediately.
@@ -85,27 +81,30 @@ export default function ShoppingScreen() {
     { filter: { user_id: user?.id } }
   );
 
-  // Group items by aisle category
+  // Group items into broad categories so the list isn't too fragmented.
   const sections = useMemo(() => {
     if (!items) return [];
+    const known = new Set(SHOPPING_CATEGORIES);
     const grouped: Record<string, ShoppingListItem[]> = {};
     items.forEach((item) => {
-      const cat = item.category || 'other';
+      const raw = item.category || 'Other';
+      // Try legacy map first, then check if already a known name,
+      // and fall back to re-classifying by ingredient name.
+      let cat = LEGACY_CATEGORY_MAP[raw] || raw;
+      if (!known.has(cat)) cat = classifyIngredient(item.name);
       if (!grouped[cat]) grouped[cat] = [];
       grouped[cat].push(item);
     });
-    return Object.entries(grouped)
-      .sort(([a], [b]) => {
-        const aLabel = AISLE_LABELS[a] || a;
-        const bLabel = AISLE_LABELS[b] || b;
-        return aLabel.localeCompare(bLabel);
-      })
-      .map(([category, data]) => ({
-        title: AISLE_LABELS[category] || category,
-        count: data.length,
-        data: data.sort((a, b) => Number(a.is_purchased) - Number(b.is_purchased)),
+    return SHOPPING_CATEGORIES
+      .filter((c) => grouped[c]?.length)
+      .map((cat) => ({
+        title: cat,
+        count: grouped[cat].length,
+        data: collapsedSections[cat]
+          ? []
+          : grouped[cat].sort((a, b) => Number(a.is_purchased) - Number(b.is_purchased)),
       }));
-  }, [items]);
+  }, [items, collapsedSections]);
 
   const purchasedCount = items?.filter((i) => i.is_purchased).length ?? 0;
   const totalCount = items?.length ?? 0;
@@ -233,12 +232,18 @@ export default function ShoppingScreen() {
   }
 
   function openAddMenu() {
-    Alert.alert('Add to Provisions', 'Choose how you want to add inventory:', [
-      { text: 'Quick Add', onPress: () => setShowAddOverlay(true) },
-      { text: 'Scan Receipt', onPress: () => router.push('/camera?mode=receipt' as any) },
-      { text: 'Scan Product', onPress: () => router.push('/camera?mode=product' as any) },
-      { text: 'Cancel', style: 'cancel' },
-    ]);
+    setAddFlowMode('choose');
+    setShowAddOverlay(true);
+  }
+
+  function closeAddOverlay() {
+    setShowAddOverlay(false);
+    setAddFlowMode('choose');
+  }
+
+  function handleScanFromOverlay(mode: 'receipt' | 'product') {
+    closeAddOverlay();
+    router.push(`/camera?mode=${mode}` as any);
   }
 
   async function completeList() {
@@ -265,6 +270,21 @@ export default function ShoppingScreen() {
         },
       ]
     );
+  }
+
+  function toggleSection(title: string) {
+    setCollapsedSections((prev) => ({ ...prev, [title]: !prev[title] }));
+  }
+
+  const allCollapsed = sections.length > 0 && sections.every((s) => collapsedSections[s.title]);
+  function toggleAll() {
+    if (allCollapsed) {
+      setCollapsedSections({});
+    } else {
+      const next: Record<string, boolean> = {};
+      sections.forEach((s) => { next[s.title] = true; });
+      setCollapsedSections(next);
+    }
   }
 
   function renderItem({ item }: { item: ShoppingListItem }) {
@@ -306,76 +326,78 @@ export default function ShoppingScreen() {
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       {/* Header */}
       <View style={styles.header}>
-        <View style={{ flex: 1 }}>
+        <View style={styles.headerTopRow}>
           <Text style={[styles.headline, { color: colors.text }]}>
-            {activeList && totalCount > 0 ? 'Provisions for the week' : 'Provisions'}
+            {activeList && totalCount > 0 ? 'Stock for the week' : 'Stock'}
           </Text>
-          <Text style={[styles.itemCount, { color: colors.textSecondary }]}>
-            {pantryItems?.length ?? 0} in stock
-            {activeList && totalCount > 0 ? ` · ${itemsLeft} to buy` : ''}
-          </Text>
-          {activeList && totalCount > 0 && (
-            <Text style={[styles.itemCount, { color: colors.textSecondary }]}>
-              {purchasedCount} / {totalCount} ITEMS
-            </Text>
-          )}
         </View>
-        <TouchableOpacity
-          style={[styles.scanButton, { backgroundColor: colors.surfaceSecondary }]}
-          onPress={openAddMenu}
-        >
-          <Icon name="plus" size={20} color={colors.text} />
-        </TouchableOpacity>
+        <View style={styles.headerBottomRow}>
+          <View style={styles.headerCounts}>
+            <Text style={[styles.itemCount, { color: colors.textSecondary }]}>
+              {pantryItems?.length ?? 0} in stock
+              {activeList && totalCount > 0 ? ` · ${itemsLeft} to buy` : ''}
+            </Text>
+            {activeList && totalCount > 0 && (
+              <Text style={[styles.itemCount, { color: colors.textSecondary }]}>
+                {purchasedCount} / {totalCount} ITEMS
+              </Text>
+            )}
+          </View>
+            <TouchableOpacity
+              style={styles.pantryButton}
+              onPress={() => router.push('/pantry' as any)}
+            >
+              <Text style={styles.pantryButtonText}>PANTRY MANAGEMENT</Text>
+            </TouchableOpacity>
+        </View>
       </View>
 
       {activeList && totalCount > 0 ? (
         <>
           <View style={styles.sectionHead}>
             <Text style={[styles.sectionHeadLabel, { color: colors.textSecondary }]}>NEED TO BUY</Text>
+            <TouchableOpacity
+              onPress={toggleAll}
+              hitSlop={8}
+              style={[styles.collapseAllButton, { borderColor: colors.border, backgroundColor: colors.surfaceSecondary }]}
+            >
+              <Text style={[styles.collapseAllLabel, { color: colors.text }]}>
+                {allCollapsed ? 'Expand All' : 'Collapse All'}
+              </Text>
+            </TouchableOpacity>
           </View>
           <SectionList
             sections={sections}
             renderItem={renderItem}
-            renderSectionHeader={({ section }) => (
-              <View style={[styles.sectionHeader, { backgroundColor: colors.background }]}>
-                <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>
-                  {section.title}
-                </Text>
-                <Text style={[styles.sectionCount, { color: colors.textSecondary }]}>
-                  {section.count} ITEMS
-                </Text>
-              </View>
-            )}
+            renderSectionHeader={({ section }) => {
+              const isCollapsed = !!collapsedSections[section.title];
+              const accentColor = CATEGORY_COLORS[section.title] || colors.textSecondary;
+              return (
+                <TouchableOpacity
+                  onPress={() => toggleSection(section.title)}
+                  activeOpacity={0.7}
+                  style={[styles.sectionHeader, { backgroundColor: colors.background }]}
+                >
+                  <Text style={[styles.sectionTitle, { color: accentColor }]}>
+                    {section.title}
+                  </Text>
+                  <View style={styles.sectionRight}>
+                    <Text style={[styles.sectionCount, { color: colors.textSecondary }]}>
+                      {section.count} ITEMS
+                    </Text>
+                    <Ionicons
+                      name={isCollapsed ? 'chevron-forward' : 'chevron-down'}
+                      size={16}
+                      color={colors.textSecondary}
+                    />
+                  </View>
+                </TouchableOpacity>
+              );
+            }}
             keyExtractor={(item) => item.id}
             contentContainerStyle={styles.listContent}
             ListFooterComponent={
               <View style={[styles.footer, { borderTopColor: colors.border }]}>
-                <View style={styles.inStockHeader}>
-                  <Text style={[styles.pantryLabel, { color: colors.textSecondary }]}>IN STOCK</Text>
-                  <TouchableOpacity onPress={openAddMenu}>
-                    <Text style={[styles.viewAllPantry, { color: colors.tint }]}>Add to Provisions</Text>
-                  </TouchableOpacity>
-                </View>
-                {pantryPreview.length > 0 ? (
-                  <View style={styles.pantryList}>
-                    {pantryPreview.map((p) => (
-                      <View key={p.id} style={[styles.pantryRow, { borderBottomColor: colors.border }]}>
-                        <Text style={[styles.pantryName, { color: colors.textSecondary }]}>{p.name}</Text>
-                        <Text style={[styles.pantryQty, { color: colors.tabIconDefault }]}>
-                          {p.quantity} {p.unit}
-                        </Text>
-                      </View>
-                    ))}
-                  </View>
-                ) : (
-                  <TouchableOpacity
-                    style={[styles.addPantryBtn, { borderColor: colors.border }]}
-                    onPress={openAddMenu}
-                  >
-                    <Text style={[styles.addPantryText, { color: colors.text }]}>No pantry items yet — add now</Text>
-                  </TouchableOpacity>
-                )}
-
                 {/* Cost + status */}
                 <View style={styles.footerRow}>
                   <View>
@@ -410,23 +432,6 @@ export default function ShoppingScreen() {
                   </Text>
                 </View>
 
-                {/* Camera quantity helper */}
-                <TouchableOpacity
-                  style={[styles.cameraHelper, { borderColor: colors.border }]}
-                  onPress={() => router.push('/camera?mode=receipt' as any)}
-                >
-                  <Icon name="camera" size={18} color={colors.text} />
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.cameraHelperTitle, { color: colors.text }]}>
-                      Add to pantry with camera
-                    </Text>
-                    <Text style={[styles.cameraHelperDesc, { color: colors.textSecondary }]}>
-                      Scan a receipt or product to update inventory quickly
-                    </Text>
-                  </View>
-                  <Icon name="chevron-right" size={16} color={colors.tabIconDefault} />
-                </TouchableOpacity>
-
                 {purchasedCount === totalCount && (
                   <Button title="Complete Shopping" onPress={completeList} style={{ marginTop: Spacing.md }} />
                 )}
@@ -443,36 +448,101 @@ export default function ShoppingScreen() {
         />
       )}
 
-      <Modal visible={showAddOverlay} animationType="slide" transparent={false} onRequestClose={() => setShowAddOverlay(false)}>
+      <Modal visible={showAddOverlay} animationType="slide" transparent={false} onRequestClose={closeAddOverlay}>
         <View style={[styles.addOverlay, { backgroundColor: colors.background }]}>
-          <View style={styles.addHeader}>
-            <Text style={[styles.addTitle, { color: colors.text }]}>Quick add to Provisions</Text>
-            <TouchableOpacity onPress={() => setShowAddOverlay(false)}>
-              <Ionicons name="close" size={24} color={colors.text} />
-            </TouchableOpacity>
-          </View>
-          <View style={styles.addForm}>
-            <Input label="Item Name" value={addName} onChangeText={setAddName} placeholder="e.g., Olive Oil" />
-            <View style={styles.addRow}>
-              <Input
-                label="Quantity"
-                value={addQuantity}
-                onChangeText={setAddQuantity}
-                placeholder="1"
-                keyboardType="numeric"
-                containerStyle={{ flex: 1 }}
-              />
-              <Input label="Unit" value={addUnit} onChangeText={setAddUnit} placeholder="bottle" containerStyle={{ flex: 1 }} />
-            </View>
-            <Input
-              label="Expiry Date (optional)"
-              value={addExpiryDate}
-              onChangeText={setAddExpiryDate}
-              placeholder="YYYY-MM-DD"
-            />
-            <Button title="Add to Provisions" onPress={handleQuickAdd} loading={adding} />
-            <Button title="Scan Receipt Instead" variant="outline" onPress={() => router.push('/camera?mode=receipt' as any)} />
-          </View>
+          {addFlowMode === 'choose' ? (
+            <>
+              <View style={styles.addTopBar}>
+                <TouchableOpacity onPress={closeAddOverlay}>
+                  <Icon name="x-mark" size={28} color={colors.text} />
+                </TouchableOpacity>
+                <Text style={[styles.topTitle, { color: colors.text }]}>Add to Stock</Text>
+                <View style={{ width: 28 }} />
+              </View>
+
+              <View style={styles.addModeList}>
+                {[
+                  {
+                    key: 'quick',
+                    icon: 'pencil-square' as const,
+                    title: 'Quick Add',
+                    desc: 'Enter item details manually',
+                    onPress: () => setAddFlowMode('quick' as AddFlowMode),
+                  },
+                  {
+                    key: 'receipt',
+                    icon: 'photo' as const,
+                    title: 'Scan Receipt',
+                    desc: 'Import pantry items from a receipt photo',
+                    onPress: () => handleScanFromOverlay('receipt'),
+                  },
+                  {
+                    key: 'product',
+                    icon: 'camera' as const,
+                    title: 'Scan Product',
+                    desc: 'Capture one product and add it quickly',
+                    onPress: () => handleScanFromOverlay('product'),
+                  },
+                ].map((opt) => (
+                  <TouchableOpacity key={opt.key} onPress={opt.onPress} activeOpacity={0.7}>
+                    <View
+                      style={[
+                        styles.addModeCard,
+                        { borderColor: colors.border, backgroundColor: colors.background },
+                      ]}
+                    >
+                      <Icon name={opt.icon} size={24} color={colors.tint} />
+                      <View style={styles.addModeTextContainer}>
+                        <Text style={[styles.addModeTitle, { color: colors.text }]}>{opt.title}</Text>
+                        <Text style={[styles.addModeDesc, { color: colors.textSecondary }]}>{opt.desc}</Text>
+                      </View>
+                      <Icon name="chevron-right" size={18} color={colors.textSecondary} />
+                    </View>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </>
+          ) : (
+            <>
+              <View style={styles.addTopBar}>
+                <TouchableOpacity onPress={() => setAddFlowMode('choose')}>
+                  <Icon name="arrow-left" size={24} color={colors.text} />
+                </TouchableOpacity>
+                <Text style={[styles.topTitle, { color: colors.text }]}>Quick Add</Text>
+                <TouchableOpacity onPress={closeAddOverlay}>
+                  <Icon name="x-mark" size={24} color={colors.text} />
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.addForm}>
+                <Input label="Item Name" value={addName} onChangeText={setAddName} placeholder="e.g., Olive Oil" />
+                <View style={styles.addRow}>
+                  <Input
+                    label="Quantity"
+                    value={addQuantity}
+                    onChangeText={setAddQuantity}
+                    placeholder="1"
+                    keyboardType="numeric"
+                    containerStyle={{ flex: 1 }}
+                  />
+                  <Input
+                    label="Unit"
+                    value={addUnit}
+                    onChangeText={setAddUnit}
+                    placeholder="bottle"
+                    containerStyle={{ flex: 1 }}
+                  />
+                </View>
+                <Input
+                  label="Expiry Date (optional)"
+                  value={addExpiryDate}
+                  onChangeText={setAddExpiryDate}
+                  placeholder="YYYY-MM-DD"
+                />
+                <Button title="Add to Stock" onPress={handleQuickAdd} loading={adding} />
+              </View>
+            </>
+          )}
         </View>
       </Modal>
     </View>
@@ -482,11 +552,23 @@ export default function ShoppingScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, paddingTop: 60 },
   header: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
     paddingHorizontal: Spacing.lg,
     marginBottom: Spacing.md,
+    gap: Spacing.xs,
+  },
+  headerTopRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+  },
+  headerBottomRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     gap: Spacing.md,
+  },
+  headerCounts: {
+    flex: 1,
+    justifyContent: 'center',
   },
   headline: {
     fontSize: FontSize.xxl,
@@ -495,8 +577,21 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.xs,
   },
   itemCount: { fontSize: FontSize.xs, fontWeight: '600', letterSpacing: 1 },
-  sectionHead: { paddingHorizontal: Spacing.lg, marginBottom: Spacing.xs },
+  sectionHead: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: Spacing.lg,
+    marginBottom: Spacing.xs,
+  },
   sectionHeadLabel: { fontSize: FontSize.xs, fontWeight: '700', letterSpacing: 1.5 },
+  collapseAllButton: {
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 6,
+    borderRadius: BorderRadius.full,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  collapseAllLabel: { fontSize: FontSize.xs, fontWeight: '700', letterSpacing: 0.5 },
   scanButton: {
     width: 40,
     height: 40,
@@ -504,6 +599,22 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     marginTop: 4,
+  },
+  pantryButton: {
+    paddingHorizontal: Spacing.md + 2,
+    minHeight: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#1B5E20',
+  },
+  pantryButtonText: {
+    fontSize: FontSize.xs,
+    fontWeight: '700',
+    letterSpacing: 0.6,
+    color: '#111111',
   },
 
   listContent: { paddingBottom: 40 },
@@ -513,12 +624,19 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.sm,
+    paddingVertical: Spacing.sm + 2,
+    marginTop: Spacing.xs,
   },
   sectionTitle: {
-    fontSize: FontSize.xs,
+    fontSize: FontSize.sm,
     fontWeight: '700',
-    letterSpacing: 1,
+    letterSpacing: 0.8,
+    textTransform: 'lowercase',
+  },
+  sectionRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
   },
   sectionCount: { fontSize: FontSize.xs, letterSpacing: 0.5 },
 
@@ -591,31 +709,30 @@ const styles = StyleSheet.create({
   progressFill: { height: '100%', borderRadius: 3 },
   progressText: { fontSize: FontSize.xs },
 
-  // Camera quantity helper
-  cameraHelper: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.md,
-    padding: Spacing.md,
-    borderWidth: 1,
-    borderRadius: BorderRadius.md,
-  },
-  cameraHelperTitle: { fontSize: FontSize.sm, fontWeight: '600' },
-  cameraHelperDesc: { fontSize: FontSize.xs, marginTop: 1 },
-
   // Add overlay
   addOverlay: {
     flex: 1,
     paddingTop: 70,
   },
-  addHeader: {
+  addTopBar: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: Spacing.lg,
     marginBottom: Spacing.lg,
   },
-  addTitle: { fontSize: FontSize.xxl, fontFamily: FontFamily.serifRegular },
+  topTitle: { fontSize: FontSize.lg, fontWeight: '600' },
+  addModeList: { paddingHorizontal: Spacing.lg, gap: Spacing.md },
+  addModeCard: {
+    borderWidth: 1,
+    padding: Spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+  },
+  addModeTextContainer: { flex: 1 },
+  addModeTitle: { fontSize: FontSize.md, fontWeight: '600' },
+  addModeDesc: { fontSize: FontSize.sm, marginTop: 2, lineHeight: 20 },
   addForm: { paddingHorizontal: Spacing.lg, gap: Spacing.md },
   addRow: { flexDirection: 'row', gap: Spacing.md },
 });

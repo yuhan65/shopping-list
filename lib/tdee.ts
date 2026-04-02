@@ -1,3 +1,6 @@
+/**
+ * Nutrition math helpers for BMR/TDEE and safe daily calorie + macro targets.
+ */
 type ActivityLevel = 'sedentary' | 'light' | 'moderate' | 'active' | 'very_active';
 type GoalType = 'lose' | 'maintain' | 'gain';
 type Sex = 'male' | 'female';
@@ -9,6 +12,15 @@ const ACTIVITY_MULTIPLIERS: Record<ActivityLevel, number> = {
   active: 1.725,
   very_active: 1.9,
 };
+
+const MIN_SAFE_CALORIES: Record<Sex, number> = {
+  female: 1200,
+  male: 1500,
+};
+
+export function minimumSafeCalories(sex: Sex = 'female'): number {
+  return MIN_SAFE_CALORIES[sex];
+}
 
 export function calculateBMR(params: {
   weightKg: number;
@@ -25,16 +37,21 @@ export function calculateTDEE(bmr: number, activityLevel: ActivityLevel): number
   return Math.round(bmr * ACTIVITY_MULTIPLIERS[activityLevel]);
 }
 
-export function calculateDailyCalories(tdee: number, goalType: GoalType): number {
-  switch (goalType) {
-    case 'lose':
-      return Math.round(tdee * 0.8); // 20% deficit
-    case 'gain':
-      return Math.round(tdee * 1.15); // 15% surplus
-    case 'maintain':
-    default:
-      return tdee;
-  }
+export function calculateDailyCalories(tdee: number, goalType: GoalType, sex: Sex = 'female'): number {
+  const rawTarget = (() => {
+    switch (goalType) {
+      case 'lose':
+        return Math.round(tdee * 0.8); // 20% deficit
+      case 'gain':
+        return Math.round(tdee * 1.15); // 15% surplus
+      case 'maintain':
+      default:
+        return tdee;
+    }
+  })();
+
+  // Guardrail for non-medical consumer use: avoid unsafe very-low-calorie targets.
+  return Math.max(rawTarget, minimumSafeCalories(sex));
 }
 
 export function calculateMacros(

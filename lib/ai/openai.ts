@@ -226,6 +226,9 @@ export class OpenAIService implements AIService {
     const days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'].slice(0, params.daysToGenerate);
     const dietaryPreferences = params.dietaryPreferences?.join(', ') || 'none';
     const pantryIngredients = params.pantryIngredients?.join(', ') || 'none';
+    const preferredCuisines = params.preferredCuisines?.join(', ') || 'none';
+    const dislikedIngredients = params.dislikedIngredients?.join(', ') || 'none';
+    const favoriteProteins = params.favoriteProteins?.join(', ') || 'none';
     const messages: AIMessage[] = [
       {
         role: 'system',
@@ -234,12 +237,22 @@ export class OpenAIService implements AIService {
 Target approximately ${params.dailyCalories} calories/day with macros: ${params.proteinG}g protein, ${params.carbsG}g carbs, ${params.fatG}g fat.
 Dietary restrictions (must obey): ${params.dietaryRestrictions.join(', ') || 'none'}.
 Dietary preferences (try to favor): ${dietaryPreferences}.
+Preferred cuisines (high priority): ${preferredCuisines}.
+Favorite proteins (high priority): ${favoriteProteins}.
+Disliked ingredients (avoid unless impossible): ${dislikedIngredients}.
 Pantry ingredients to prioritize where possible: ${pantryIngredients}.
+Cooking effort preference: ${params.cookingEffort || 'medium'}.
+Prep time target per meal: ${params.prepTimeTargetMinutes || 30} minutes.
+Spice tolerance: ${params.spiceTolerance || 'medium'}.
+Repeat tolerance: ${params.repeatTolerance || 'medium'}.
+Budget sensitivity: ${params.budgetSensitivity || 'medium'}.
 
 IMPORTANT PRIORITY RULES:
-1) Prefer saved database recipes when they are a good fit.
-2) Use generated meals only when they better fit constraints, pantry usage, or variety.
-3) If recipes include priority_score, treat higher scores as stronger preference.
+1) Respect hard restrictions and dislikes first.
+2) Taste preference is the highest ranking factor.
+3) Prefer saved database recipes when fit is close.
+4) Use generated meals only when they better fit preferences, pantry usage, or variety.
+5) If recipes include priority_score, treat higher scores as stronger preference.
 
 Return strict JSON with this shape:
 {

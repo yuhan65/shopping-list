@@ -11,8 +11,10 @@ import { Spacing, FontSize, FontFamily, BorderRadius } from '@/constants/Spacing
 import { MacroColors } from '@/constants/Colors';
 import { Card, Button, Icon } from '@/components/ui';
 import { useAuthStore } from '@/stores/authStore';
+import { useRecipePreviewStore } from '@/stores/recipePreviewStore';
 import { useSupabaseQuery } from '@/hooks/useSupabaseQuery';
 import { mealTitle } from '@/lib/mealTitle';
+import { minimumSafeCalories } from '@/lib/tdee';
 import type {
   MealPlan,
   MealPlanItem,
@@ -55,6 +57,7 @@ export default function TodayScreen() {
   const colors = useThemeColors();
   const router = useRouter();
   const user = useAuthStore((s) => s.user);
+  const setPreviewDraft = useRecipePreviewStore((s) => s.setDraft);
 
   const { data: profiles } = useSupabaseQuery<Profile>(['profile'], 'profiles', {
     filter: { user_id: user?.id },
@@ -132,10 +135,11 @@ export default function TodayScreen() {
 
     for (const item of todayMeals) {
       const recipe = item.recipe as unknown as Recipe;
-      plannedCals += (recipe?.calories_per_serving ?? 0) * item.servings;
-      plannedProtein += (recipe?.protein_per_serving ?? 0) * item.servings;
-      plannedCarbs += (recipe?.carbs_per_serving ?? 0) * item.servings;
-      plannedFat += (recipe?.fat_per_serving ?? 0) * item.servings;
+      const generated = item.generated_recipe;
+      plannedCals += (recipe?.calories_per_serving ?? generated?.calories_per_serving ?? 0) * item.servings;
+      plannedProtein += (recipe?.protein_per_serving ?? generated?.protein_per_serving ?? 0) * item.servings;
+      plannedCarbs += (recipe?.carbs_per_serving ?? generated?.carbs_per_serving ?? 0) * item.servings;
+      plannedFat += (recipe?.fat_per_serving ?? generated?.fat_per_serving ?? 0) * item.servings;
     }
 
     if (foodLogs) {
@@ -148,7 +152,7 @@ export default function TodayScreen() {
       }
     }
 
-    const targetCals = (goal?.daily_calories ?? plannedCals) || 2000;
+    const targetCals = Math.max((goal?.daily_calories ?? plannedCals) || 2000, minimumSafeCalories());
     const consumedCals = loggedCount > 0 ? loggedCals : 0;
 
     return {
@@ -188,13 +192,6 @@ export default function TodayScreen() {
         style={[styles.container, { backgroundColor: colors.background }]}
         contentContainerStyle={styles.emptyContent}
       >
-        <View style={styles.topRow}>
-          <View style={styles.topRowLeft} />
-          <TouchableOpacity onPress={() => router.push('/profile' as any)}>
-            <Icon name="users" size={22} color={colors.text} />
-          </TouchableOpacity>
-        </View>
-
         <Text style={[styles.emptyHeadline, { color: colors.text }]}>
           Ready to plan your nourishment
         </Text>
@@ -224,7 +221,7 @@ export default function TodayScreen() {
       style={[styles.container, { backgroundColor: colors.background }]}
       contentContainerStyle={styles.content}
     >
-      {/* Header row: greeting + profile icon */}
+      {/* Header row: greeting and date */}
       <View style={styles.topRow}>
         <View>
           <Text style={[styles.greeting, { color: colors.textSecondary }]}>
@@ -234,12 +231,6 @@ export default function TodayScreen() {
             {formatDate()}
           </Text>
         </View>
-        <TouchableOpacity
-          style={[styles.profileButton, { backgroundColor: colors.surfaceSecondary }]}
-          onPress={() => router.push('/profile' as any)}
-        >
-          <Icon name="users" size={20} color={colors.text} />
-        </TouchableOpacity>
       </View>
 
       {/* Daily calorie progress */}
@@ -299,8 +290,13 @@ export default function TodayScreen() {
       {todayMeals.length > 0 ? (
         todayMeals.map((item) => {
           const recipe = item.recipe as unknown as Recipe;
+          const generated = item.generated_recipe;
           const mealLog = getLogForMeal(item.meal_type);
-          const cals = Math.round((recipe?.calories_per_serving ?? 0) * item.servings);
+          const cals = Math.round(
+            (recipe?.calories_per_serving ?? generated?.calories_per_serving ?? 0) * item.servings
+          );
+          const prepMinutes = recipe?.prep_time_minutes ?? generated?.prep_time_minutes;
+          const mealName = recipe?.title || generated?.title || item.generated_title || 'Quick meal';
 
           let statusColor = colors.tabIconDefault;
           let statusText = 'Planned';
@@ -327,29 +323,45 @@ export default function TodayScreen() {
                   <Text style={[styles.mealCals, { color: colors.textSecondary }]}>
                     {cals} kcal
                   </Text>
-                  {recipe?.prep_time_minutes && (
+                  {prepMinutes && (
                     <Text style={[styles.mealPrep, { color: colors.textSecondary }]}>
-                      {recipe.prep_time_minutes} min prep
+                      {prepMinutes} min prep
                     </Text>
                   )}
                 </View>
               </View>
 
               <TouchableOpacity
-                onPress={() => router.push(`/recipe/${item.recipe_id}` as any)}
+                onPress={() => {
+                  if (item.recipe_id) {
+                    router.push(`/recipe/${item.recipe_id}` as any);
+                    return;
+                  }
+                  if (generated) {
+                    setPreviewDraft(
+                      {
+                        ...generated,
+                        description: generated.description ?? '',
+                      },
+                      'ai'
+                    );
+                    router.push('/recipe/preview' as any);
+                  }
+                }}
+                disabled={!item.recipe_id && !generated}
               >
                 <Text style={[styles.mealTitle, { color: colors.text }]}>
-                  {mealTitle(recipe)}
+                  {item.recipe_id ? mealTitle(recipe) : mealName}
                 </Text>
               </TouchableOpacity>
 
               {/* Macro row for this meal */}
-              {recipe && (
+              {(recipe || generated) && (
                 <View style={styles.mealMacroRow}>
                   {[
-                    { label: 'PROTEIN', val: recipe.protein_per_serving },
-                    { label: 'CARBS', val: recipe.carbs_per_serving },
-                    { label: 'FAT', val: recipe.fat_per_serving },
+                    { label: 'PROTEIN', val: recipe?.protein_per_serving ?? generated?.protein_per_serving },
+                    { label: 'CARBS', val: recipe?.carbs_per_serving ?? generated?.carbs_per_serving },
+                    { label: 'FAT', val: recipe?.fat_per_serving ?? generated?.fat_per_serving },
                   ].map((m) => (
                     <View key={m.label} style={styles.mealMacroItem}>
                       <Text style={[styles.mealMacroLabel, { color: colors.textSecondary }]}>

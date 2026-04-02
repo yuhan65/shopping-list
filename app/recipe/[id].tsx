@@ -26,11 +26,12 @@ export default function RecipeDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const colors = useThemeColors();
   const router = useRouter();
+  const hasValidId = !!id && id !== 'null' && id !== 'undefined';
 
   const { data: recipes, isLoading } = useSupabaseQuery<Recipe>(
     ['recipe', id],
     'recipes',
-    { filter: { id } }
+    { filter: { id }, enabled: hasValidId }
   );
   const recipe = recipes?.[0];
 
@@ -49,7 +50,21 @@ export default function RecipeDetailScreen() {
     ]);
   }
 
-  if (isLoading || !recipe) return <LoadingScreen />;
+  if (isLoading) return <LoadingScreen />;
+
+  if (!recipe) {
+    return (
+      <View style={[styles.container, { backgroundColor: colors.background, justifyContent: 'center', padding: Spacing.lg }]}>
+        <Text style={[styles.title, { color: colors.text, marginBottom: Spacing.sm }]}>Recipe not found</Text>
+        <Text style={[styles.description, { color: colors.textSecondary, marginBottom: Spacing.lg }]}>
+          This meal no longer links to a saved recipe. You can go back and open another meal.
+        </Text>
+        <TouchableOpacity style={[styles.actionBtn, { borderColor: colors.border }]} onPress={() => router.back()}>
+          <Text style={[styles.actionBtnText, { color: colors.text }]}>GO BACK</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
 
   const difficultyLabel = recipe.difficulty
     ? recipe.difficulty.charAt(0).toUpperCase() + recipe.difficulty.slice(1)

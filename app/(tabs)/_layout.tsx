@@ -1,8 +1,7 @@
 /**
- * Tab bar layout — defines the 4 main tabs of the app.
+ * Tab bar layout — defines the 5 main tabs of the app.
  * Today (daily hub), Plan (weekly overview), Recipes (collection),
- * and Provisions (shopping + pantry combined). Profile is
- * accessible from other screens but hidden from the tab bar.
+ * Stock (shopping + pantry combined), and Profile on the right.
  */
 import { Tabs } from 'expo-router';
 import { View, Text, StyleSheet } from 'react-native';
@@ -70,7 +69,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="index"
         options={{
-          tabBarIcon: ({ focused }) => <TabLabel label="Today" focused={focused} />,
+          href: null,
         }}
       />
       <Tabs.Screen
@@ -88,16 +87,18 @@ export default function TabLayout() {
       <Tabs.Screen
         name="shopping"
         options={{
-          tabBarIcon: ({ focused }) => <TabLabel label="Provisions" focused={focused} />,
+          tabBarIcon: ({ focused }) => <TabLabel label="Stock" focused={focused} />,
+        }}
+      />
+      <Tabs.Screen
+        name="profile"
+        options={{
+          tabBarIcon: ({ focused }) => <TabLabel label="Profile" focused={focused} />,
         }}
       />
       {/* Pantry route is kept as a redirect for backwards compatibility */}
       <Tabs.Screen
         name="pantry"
-        options={{ href: null }}
-      />
-      <Tabs.Screen
-        name="profile"
         options={{ href: null }}
       />
     </Tabs>

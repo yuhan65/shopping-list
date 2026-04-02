@@ -1,6 +1,9 @@
-import React, { useState } from 'react';
+/**
+ * Weekly meal-plan screen that generates plans, shows each day/meal, and lets users save AI meal drafts.
+ */
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useThemeColors } from '@/hooks/useColorScheme';
 import { Spacing, FontSize, FontFamily, BorderRadius } from '@/constants/Spacing';
 import { Button, Card, EmptyState, Icon } from '@/components/ui';
@@ -11,7 +14,16 @@ import { useSupabaseQuery } from '@/hooks/useSupabaseQuery';
 import { supabase } from '@/lib/supabase';
 import { mealTitle } from '@/lib/mealTitle';
 import { createAIService } from '@/lib/ai';
+import { minimumSafeCalories } from '@/lib/tdee';
+import { buildTasteProfileFromSignals, scoreRecipeWithPreferences } from '@/lib/preferences';
+import { useMealPlanGenerationStore } from '@/stores/mealPlanGenerationStore';
 import { useQueryClient } from '@tanstack/react-query';
+import {
+  shouldSkipItem,
+  convertToShoppableUnit,
+  roundForShopping,
+  classifyIngredient,
+} from '@/lib/shoppingHelpers';
 import type {
   Recipe,
   MealPlan,
@@ -21,6 +33,9 @@ import type {
   PantryItem,
   Profile,
   GeneratedRecipeDraft,
+  MealFeedback,
+  UserPreferenceSignal,
+  UserTasteProfile,
 } from '@/types/database';
 
 const DAYS: { key: string; label: string }[] = [
@@ -40,9 +55,181 @@ const MEAL_LABELS: Record<string, string> = {
   snack: 'Snack',
 };
 
+const MEAL_SLOT_ORDER: MealPlanItem['meal_type'][] = ['breakfast', 'lunch', 'dinner', 'snack'];
+
+function fallbackCaloriesForMeal(mealType: MealPlanItem['meal_type'], dailyCalories: number): number {
+  const target = Math.max(500, dailyCalories || 0);
+  const ratioByMeal: Record<MealPlanItem['meal_type'], number> = {
+    breakfast: 0.25,
+    lunch: 0.35,
+    dinner: 0.3,
+    snack: 0.1,
+  };
+  return Math.max(40, Math.round(target * ratioByMeal[mealType]));
+}
+
+function createFallbackGeneratedRecipe(params: {
+  mealType: MealPlanItem['meal_type'];
+  dailyCalories: number;
+}): GeneratedRecipeDraft {
+  const isVeryLowCalorie = params.dailyCalories < 900;
+  const targetCalories = fallbackCaloriesForMeal(params.mealType, params.dailyCalories);
+
+  if (isVeryLowCalorie) {
+    if (params.mealType === 'breakfast') {
+      return {
+        title: 'Banana and Tea',
+        description: 'Very light breakfast used as a fallback when matching meals are unavailable.',
+        ingredients: [
+          { name: 'banana', quantity: 1, unit: 'piece', category: 'produce' },
+          { name: 'unsweetened tea', quantity: 1, unit: 'cup', category: 'beverages' },
+        ],
+        instructions: ['Peel and eat the banana.', 'Brew and drink unsweetened tea.'],
+        servings: 1,
+        prep_time_minutes: 2,
+        cook_time_minutes: 0,
+        calories_per_serving: targetCalories,
+        protein_per_serving: 1,
+        carbs_per_serving: 30,
+        fat_per_serving: 0,
+        tags: ['fallback', 'very-low-calorie'],
+      };
+    }
+    if (params.mealType === 'lunch') {
+      return {
+        title: 'Quick Vegetable Soup',
+        description: 'Simple fallback lunch for strict calorie targets.',
+        ingredients: [
+          { name: 'vegetable broth', quantity: 2, unit: 'cup', category: 'canned' },
+          { name: 'mixed vegetables', quantity: 1, unit: 'cup', category: 'produce' },
+        ],
+        instructions: ['Bring broth to a simmer.', 'Add vegetables and cook for 8-10 minutes.'],
+        servings: 1,
+        prep_time_minutes: 5,
+        cook_time_minutes: 10,
+        calories_per_serving: targetCalories,
+        protein_per_serving: 5,
+        carbs_per_serving: 24,
+        fat_per_serving: 3,
+        tags: ['fallback', 'very-low-calorie'],
+      };
+    }
+    if (params.mealType === 'dinner') {
+      return {
+        title: 'Light Evening Option (Optional Skip)',
+        description: 'Fallback dinner placeholder when no strict-calorie match exists.',
+        ingredients: [{ name: 'herbal tea', quantity: 1, unit: 'cup', category: 'beverages' }],
+        instructions: [
+          'Prepare warm herbal tea.',
+          'If not hungry, you can skip this meal and hydrate instead.',
+        ],
+        servings: 1,
+        prep_time_minutes: 2,
+        cook_time_minutes: 0,
+        calories_per_serving: Math.min(30, targetCalories),
+        protein_per_serving: 0,
+        carbs_per_serving: 1,
+        fat_per_serving: 0,
+        tags: ['fallback', 'optional-meal'],
+      };
+    }
+    return {
+      title: 'Cucumber Snack Cup',
+      description: 'Very light snack fallback.',
+      ingredients: [{ name: 'cucumber', quantity: 0.5, unit: 'piece', category: 'produce' }],
+      instructions: ['Slice cucumber and enjoy as a fresh snack.'],
+      servings: 1,
+      prep_time_minutes: 3,
+      cook_time_minutes: 0,
+      calories_per_serving: targetCalories,
+      protein_per_serving: 1,
+      carbs_per_serving: 4,
+      fat_per_serving: 0,
+      tags: ['fallback', 'very-low-calorie'],
+    };
+  }
+
+  if (params.mealType === 'breakfast') {
+    return {
+      title: 'Greek Yogurt and Berries',
+      description: 'Simple backup breakfast when no exact recipe match is available.',
+      ingredients: [
+        { name: 'plain greek yogurt', quantity: 0.75, unit: 'cup', category: 'dairy' },
+        { name: 'mixed berries', quantity: 0.5, unit: 'cup', category: 'produce' },
+      ],
+      instructions: ['Add yogurt to a bowl.', 'Top with berries and serve.'],
+      servings: 1,
+      prep_time_minutes: 3,
+      cook_time_minutes: 0,
+      calories_per_serving: targetCalories,
+      protein_per_serving: 20,
+      carbs_per_serving: 18,
+      fat_per_serving: 6,
+      tags: ['fallback', 'high-protein'],
+    };
+  }
+  if (params.mealType === 'lunch') {
+    return {
+      title: 'Egg and Veggie Scramble',
+      description: 'Fast fallback lunch with balanced macros.',
+      ingredients: [
+        { name: 'eggs', quantity: 2, unit: 'piece', category: 'dairy' },
+        { name: 'spinach', quantity: 1, unit: 'cup', category: 'produce' },
+        { name: 'olive oil', quantity: 1, unit: 'tbsp', category: 'condiments' },
+      ],
+      instructions: ['Heat olive oil in a pan.', 'Cook spinach briefly, then scramble in eggs until set.'],
+      servings: 1,
+      prep_time_minutes: 5,
+      cook_time_minutes: 8,
+      calories_per_serving: targetCalories,
+      protein_per_serving: 19,
+      carbs_per_serving: 6,
+      fat_per_serving: 22,
+      tags: ['fallback', 'balanced'],
+    };
+  }
+  if (params.mealType === 'dinner') {
+    return {
+      title: 'Chicken and Steamed Vegetables',
+      description: 'Simple fallback dinner with easy prep.',
+      ingredients: [
+        { name: 'chicken breast', quantity: 120, unit: 'g', category: 'meat' },
+        { name: 'broccoli', quantity: 1.5, unit: 'cup', category: 'produce' },
+      ],
+      instructions: ['Pan-sear chicken until fully cooked.', 'Steam broccoli and serve together.'],
+      servings: 1,
+      prep_time_minutes: 8,
+      cook_time_minutes: 15,
+      calories_per_serving: targetCalories,
+      protein_per_serving: 32,
+      carbs_per_serving: 10,
+      fat_per_serving: 10,
+      tags: ['fallback', 'high-protein'],
+    };
+  }
+  return {
+    title: 'Banana with Peanut Butter',
+    description: 'Quick fallback snack.',
+    ingredients: [
+      { name: 'banana', quantity: 1, unit: 'piece', category: 'produce' },
+      { name: 'peanut butter', quantity: 1, unit: 'tbsp', category: 'condiments' },
+    ],
+    instructions: ['Slice banana and top with peanut butter.'],
+    servings: 1,
+    prep_time_minutes: 2,
+    cook_time_minutes: 0,
+    calories_per_serving: targetCalories,
+    protein_per_serving: 5,
+    carbs_per_serving: 30,
+    fat_per_serving: 8,
+    tags: ['fallback', 'quick-snack'],
+  };
+}
+
 export default function MealPlanScreen() {
   const colors = useThemeColors();
   const router = useRouter();
+  const params = useLocalSearchParams<{ autogenerate?: string }>();
   const user = useAuthStore((s) => s.user);
   const isDemoMode = useAuthStore((s) => s.isDemoMode);
   const localInsert = useLocalDataStore((s) => s.insert);
@@ -50,10 +237,16 @@ export default function MealPlanScreen() {
   const localQuery = useLocalDataStore((s) => s.query);
   const setPreviewDraft = useRecipePreviewStore((s) => s.setDraft);
   const queryClient = useQueryClient();
+  const startGeneration = useMealPlanGenerationStore((s) => s.startGeneration);
+  const setGenerationPhase = useMealPlanGenerationStore((s) => s.setPhase);
+  const completeGeneration = useMealPlanGenerationStore((s) => s.completeGeneration);
+  const failGeneration = useMealPlanGenerationStore((s) => s.failGeneration);
 
   const [generating, setGenerating] = useState(false);
   const [generatingList, setGeneratingList] = useState(false);
   const [savingMealItemId, setSavingMealItemId] = useState<string | null>(null);
+  const [feedbackLoadingId, setFeedbackLoadingId] = useState<string | null>(null);
+  const hasAutoGeneratedRef = useRef(false);
 
   const { data: recipes } = useSupabaseQuery<Recipe>(['recipes'], 'recipes', {
     filter: { user_id: user?.id },
@@ -92,6 +285,26 @@ export default function MealPlanScreen() {
     }
   );
 
+  const { data: preferenceSignals } = useSupabaseQuery<UserPreferenceSignal>(
+    ['user_preference_signals'],
+    'user_preference_signals',
+    {
+      filter: { user_id: user?.id },
+      orderBy: { column: 'created_at', ascending: false },
+      limit: 300,
+    }
+  );
+
+  const { data: tasteProfiles } = useSupabaseQuery<UserTasteProfile>(
+    ['user_taste_profiles'],
+    'user_taste_profiles',
+    {
+      filter: { user_id: user?.id },
+      limit: 1,
+    }
+  );
+  const tasteProfile = tasteProfiles?.[0];
+
   function normalizeGeneratedRecipe(value: unknown): GeneratedRecipeDraft | null {
     if (!value || typeof value !== 'object') return null;
     const recipe = value as any;
@@ -115,29 +328,128 @@ export default function MealPlanScreen() {
     };
   }
 
-  function scoreRecipe(recipe: Recipe, pantryNames: string[], dietaryPrefs: string[]): number {
-    const tags = (recipe.tags || []).map((tag) => tag.toLowerCase());
-    const pantrySet = new Set(pantryNames.map((item) => item.toLowerCase()));
-    const prefSet = new Set(dietaryPrefs.map((item) => item.toLowerCase()));
-    const ingredientHits = (recipe.ingredients || []).filter((ing) =>
-      pantrySet.has(String(ing.name || '').toLowerCase())
-    ).length;
-    const preferenceHits = tags.filter((tag) => prefSet.has(tag)).length;
-    const macroCoverage =
-      recipe.calories_per_serving != null &&
-      recipe.protein_per_serving != null &&
-      recipe.carbs_per_serving != null &&
-      recipe.fat_per_serving != null
-        ? 1
-        : 0;
-    return ingredientHits * 4 + preferenceHits * 3 + macroCoverage;
+  async function logPreferenceFeedback(params: {
+    mealItem: MealPlanItem;
+    feedbackType: MealFeedback['feedback_type'];
+    reason?: string;
+  }) {
+    if (!user) return;
+    setFeedbackLoadingId(params.mealItem.id);
+
+    const recipe = params.mealItem.recipe as unknown as Recipe | undefined;
+    const generated = params.mealItem.generated_recipe;
+    const title = recipe?.title || generated?.title || params.mealItem.generated_title || 'meal';
+    const topTags = (recipe?.tags || generated?.tags || []).slice(0, 3);
+    const ingredientNames = (recipe?.ingredients || generated?.ingredients || [])
+      .slice(0, 4)
+      .map((x) => x.name.toLowerCase());
+
+    const signalRows: Record<string, unknown>[] = [
+      {
+        user_id: user.id,
+        signal_type:
+          params.feedbackType === 'liked' || params.feedbackType === 'cooked'
+            ? 'recipe_like'
+            : params.feedbackType === 'skipped'
+              ? 'meal_skipped'
+              : params.feedbackType === 'swapped'
+                ? 'meal_swapped_out'
+                : 'recipe_dislike',
+        entity_type: 'meal_plan_item',
+        entity_key: params.mealItem.id,
+        weight: 1,
+        metadata: { reason: params.reason || null, meal_type: params.mealItem.meal_type },
+      },
+      {
+        user_id: user.id,
+        signal_type:
+          params.feedbackType === 'liked' || params.feedbackType === 'cooked'
+            ? 'recipe_like'
+            : params.feedbackType === 'skipped'
+              ? 'meal_skipped'
+              : params.feedbackType === 'swapped'
+                ? 'meal_swapped_out'
+                : 'recipe_dislike',
+        entity_type: 'recipe',
+        entity_key: recipe?.id || title.toLowerCase(),
+        weight: 1,
+        metadata: { reason: params.reason || null, source_type: params.mealItem.source_type },
+      },
+      ...topTags.map((tag) => ({
+        user_id: user.id,
+        signal_type:
+          params.feedbackType === 'liked' || params.feedbackType === 'cooked'
+            ? 'recipe_like'
+            : 'recipe_dislike',
+        entity_type: 'tag',
+        entity_key: String(tag).toLowerCase(),
+        weight: 0.7,
+        metadata: { reason: params.reason || null },
+      })),
+      ...ingredientNames.map((name) => ({
+        user_id: user.id,
+        signal_type:
+          params.feedbackType === 'liked' || params.feedbackType === 'cooked'
+            ? 'recipe_like'
+            : 'recipe_dislike',
+        entity_type: 'ingredient',
+        entity_key: name,
+        weight: 0.5,
+        metadata: { reason: params.reason || null },
+      })),
+    ];
+
+    const mealFeedbackRow: Record<string, unknown> = {
+      meal_plan_item_id: params.mealItem.id,
+      user_id: user.id,
+      feedback_type: params.feedbackType,
+      reason: params.reason || null,
+    };
+
+    try {
+      if (isDemoMode) {
+        localInsert('meal_feedback', mealFeedbackRow);
+        signalRows.forEach((row) => localInsert('user_preference_signals', row));
+      } else {
+        const { error: feedbackError } = await supabase.from('meal_feedback').insert(mealFeedbackRow);
+        if (feedbackError) throw feedbackError;
+        const { error: signalError } = await supabase.from('user_preference_signals').insert(signalRows);
+        if (signalError) throw signalError;
+      }
+
+      queryClient.invalidateQueries({ queryKey: ['meal_feedback'] });
+      queryClient.invalidateQueries({ queryKey: ['user_preference_signals'] });
+      await syncTasteProfileSnapshot();
+      Alert.alert('Saved', 'Preference feedback recorded.');
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Could not save feedback.');
+    } finally {
+      setFeedbackLoadingId(null);
+    }
+  }
+
+  async function syncTasteProfileSnapshot() {
+    if (!user) return;
+    const mergedSignals = preferenceSignals || [];
+    const scores = buildTasteProfileFromSignals(mergedSignals, tasteProfile);
+    const snapshotRow = {
+      user_id: user.id,
+      ingredient_scores: scores.ingredient_scores,
+      cuisine_scores: scores.cuisine_scores,
+      tag_scores: scores.tag_scores,
+      effort_preference: profile?.cooking_effort || 'medium',
+      spice_preference: profile?.spice_tolerance || 'medium',
+      variety_preference: profile?.repeat_tolerance || 'medium',
+    };
+    if (isDemoMode) {
+      useLocalDataStore.getState().upsert('user_taste_profiles', snapshotRow);
+      return;
+    }
+    await supabase.from('user_taste_profiles').upsert(snapshotRow);
+    queryClient.invalidateQueries({ queryKey: ['user_taste_profiles'] });
   }
 
   async function generateMealPlan() {
-    if (!recipes || recipes.length === 0) {
-      Alert.alert('No Recipes', 'Please add some recipes first before generating a meal plan.');
-      return;
-    }
     if (!goal) {
       Alert.alert('No Goals', 'Please set your body goals in your profile first.');
       return;
@@ -146,11 +458,23 @@ export default function MealPlanScreen() {
     // Navigate to the animated loading screen
     router.push('/meal-plan/generating' as any);
 
+    startGeneration();
     setGenerating(true);
     try {
+      setGenerationPhase('reading_profile');
+      const planningDailyCalories = Math.max(goal.daily_calories, minimumSafeCalories());
       const ai = createAIService();
       const pantryNames = (pantryItems || []).map((item) => item.name);
       const dietaryPreferences = profile?.dietary_restrictions || [];
+      const computedTaste = buildTasteProfileFromSignals(preferenceSignals || [], tasteProfile);
+      const effectiveTasteProfile = tasteProfile
+        ? { ...tasteProfile, ...computedTaste }
+        : {
+            ingredient_scores: computedTaste.ingredient_scores,
+            cuisine_scores: computedTaste.cuisine_scores,
+            tag_scores: computedTaste.tag_scores,
+          };
+      setGenerationPhase('matching_preferences');
       const rankedRecipes = recipes
         .map((r) => ({
           id: r.id,
@@ -160,22 +484,38 @@ export default function MealPlanScreen() {
           carbs: r.carbs_per_serving,
           fat: r.fat_per_serving,
           tags: r.tags || [],
-          priority_score: scoreRecipe(r, pantryNames, dietaryPreferences),
+          priority_score: scoreRecipeWithPreferences(r, {
+            pantryNames,
+            dietaryTags: [...dietaryPreferences, ...(profile?.preferred_cuisines || [])],
+            tasteProfile: effectiveTasteProfile,
+            effortPreference: profile?.cooking_effort || 'medium',
+            prepTimePreferenceMinutes: profile?.prep_time_preference_minutes || 30,
+          }),
         }))
         .sort((a, b) => b.priority_score - a.priority_score);
 
+      setGenerationPhase('generating_weekly_meals');
       const result = await ai.generateMealPlan({
         recipes: rankedRecipes,
-        dailyCalories: goal.daily_calories,
+        dailyCalories: planningDailyCalories,
         proteinG: goal.protein_g,
         carbsG: goal.carbs_g,
         fatG: goal.fat_g,
         dietaryRestrictions: profile?.dietary_restrictions || [],
         dietaryPreferences,
+        preferredCuisines: profile?.preferred_cuisines || [],
+        dislikedIngredients: profile?.disliked_ingredients || [],
+        favoriteProteins: profile?.favorite_proteins || [],
+        cookingEffort: profile?.cooking_effort || 'medium',
+        prepTimeTargetMinutes: profile?.prep_time_preference_minutes || 30,
+        spiceTolerance: profile?.spice_tolerance || 'medium',
+        repeatTolerance: profile?.repeat_tolerance || 'medium',
+        budgetSensitivity: profile?.budget_sensitivity || 'medium',
         pantryIngredients: pantryNames,
         daysToGenerate: 7,
       });
 
+      setGenerationPhase('saving_plan');
       if (activePlan) {
         if (isDemoMode) {
           localUpdate('meal_plans', activePlan.id, { status: 'completed' });
@@ -217,41 +557,74 @@ export default function MealPlanScreen() {
         newPlanId = newPlan.id;
       }
 
-      const items = result.days
-        .flatMap((day) =>
-          day.meals.map((meal: any): Record<string, unknown> | null => {
-            const sourceType: 'db' | 'generated' =
-              meal.source_type === 'generated' ? 'generated' : 'db';
+      const validRecipeIds = new Set((recipes || []).map((r) => r.id));
+      const normalizedDays = DAYS.map((d) => d.key);
 
-            if (sourceType === 'db') {
-              if (!meal.recipe_id) return null;
-              return {
-                meal_plan_id: newPlanId,
-                recipe_id: meal.recipe_id,
-                source_type: 'db',
-                generated_recipe: null,
-                generated_title: null,
-                day_of_week: day.day,
-                meal_type: meal.meal_type,
-                servings: meal.servings,
-              };
-            }
+      const items = normalizedDays.flatMap((dayKey) => {
+        const dayBlock = result.days.find((d) => d.day === dayKey);
+        const mealsByType = new Map<string, any>();
+        for (const meal of dayBlock?.meals || []) {
+          if (!meal || typeof meal !== 'object') continue;
+          if (typeof meal.meal_type !== 'string') continue;
+          if (!mealsByType.has(meal.meal_type)) {
+            mealsByType.set(meal.meal_type, meal);
+          }
+        }
 
-            const generatedRecipe = normalizeGeneratedRecipe(meal.generated_recipe);
-            if (!generatedRecipe) return null;
+        return MEAL_SLOT_ORDER.map((mealType): Record<string, unknown> => {
+          const meal = mealsByType.get(mealType);
+          const servings =
+            typeof meal?.servings === 'number' && meal.servings > 0 ? Math.round(meal.servings) : 1;
+
+          if (
+            meal?.source_type === 'db' &&
+            typeof meal.recipe_id === 'string' &&
+            validRecipeIds.has(meal.recipe_id)
+          ) {
             return {
               meal_plan_id: newPlanId,
-              recipe_id: null,
-              source_type: 'generated',
-              generated_recipe: generatedRecipe,
-              generated_title: generatedRecipe.title,
-              day_of_week: day.day,
-              meal_type: meal.meal_type,
-              servings: meal.servings,
+              recipe_id: meal.recipe_id,
+              source_type: 'db',
+              generated_recipe: null,
+              generated_title: null,
+              day_of_week: dayKey,
+              meal_type: mealType,
+              servings,
             };
-          })
-        )
-        .filter((item): item is Record<string, unknown> => item !== null);
+          }
+
+          if (meal?.source_type === 'generated') {
+            const generatedRecipe = normalizeGeneratedRecipe(meal.generated_recipe);
+            if (generatedRecipe) {
+              return {
+                meal_plan_id: newPlanId,
+                recipe_id: null,
+                source_type: 'generated',
+                generated_recipe: generatedRecipe,
+                generated_title: generatedRecipe.title,
+                day_of_week: dayKey,
+                meal_type: mealType,
+                servings,
+              };
+            }
+          }
+
+          const fallbackRecipe = createFallbackGeneratedRecipe({
+            mealType,
+            dailyCalories: planningDailyCalories,
+          });
+          return {
+            meal_plan_id: newPlanId,
+            recipe_id: null,
+            source_type: 'generated',
+            generated_recipe: fallbackRecipe,
+            generated_title: fallbackRecipe.title,
+            day_of_week: dayKey,
+            meal_type: mealType,
+            servings: 1,
+          };
+        });
+      });
 
       if (isDemoMode) {
         items.forEach((item) => localInsert('meal_plan_items', item));
@@ -263,13 +636,24 @@ export default function MealPlanScreen() {
       queryClient.invalidateQueries({ queryKey: ['meal_plans'] });
       queryClient.invalidateQueries({ queryKey: ['meal_plan_items'] });
 
+      completeGeneration();
       Alert.alert('Success', 'Weekly meal plan generated!');
     } catch (err: any) {
+      failGeneration(err?.message || 'Could not generate meal plan.');
       Alert.alert('Error', err.message);
     } finally {
       setGenerating(false);
     }
   }
+
+  useEffect(() => {
+    if (params.autogenerate !== '1') return;
+    if (hasAutoGeneratedRef.current) return;
+    if (!goal) return;
+
+    hasAutoGeneratedRef.current = true;
+    generateMealPlan();
+  }, [params.autogenerate, goal]);
 
   async function saveGeneratedRecipe(item: MealPlanItem) {
     const generatedRecipe = item.generated_recipe;
@@ -360,18 +744,27 @@ export default function MealPlanScreen() {
         if (ingredients.length === 0) continue;
 
         for (const ing of ingredients) {
-          const key = `${normalize(ing.name)}_${normalize(ing.unit)}`;
+          // Don't add things like water or ice to the shopping list
+          if (shouldSkipItem(ing.name)) continue;
+
+          // Convert impractical units (e.g. 6 cloves garlic → 30 g)
+          const rawQty = ing.quantity * item.servings;
+          const converted = convertToShoppableUnit(ing.name, rawQty, ing.unit);
+
+          // Use name + converted unit as key so garlic_g consolidates properly
+          const key = `${normalize(ing.name)}_${normalize(converted.unit)}`;
           if (ingredientMap[key]) {
-            ingredientMap[key].quantity += ing.quantity * item.servings;
+            ingredientMap[key].quantity += converted.quantity;
             if (item.recipe_id && !ingredientMap[key].recipeIds.includes(item.recipe_id)) {
               ingredientMap[key].recipeIds.push(item.recipe_id);
             }
           } else {
             ingredientMap[key] = {
               name: ing.name.trim(),
-              quantity: ing.quantity * item.servings,
-              unit: ing.unit,
-              category: ing.category || 'other',
+              quantity: converted.quantity,
+              unit: converted.unit,
+              // Classify by name into a real supermarket section
+              category: classifyIngredient(ing.name),
               recipeIds: item.recipe_id ? [item.recipe_id] : [],
             };
           }
@@ -392,28 +785,38 @@ export default function MealPlanScreen() {
         pantryRows = data ?? [];
       }
 
+      // Convert pantry units too so "5 cloves garlic" in pantry
+      // correctly deducts from "garlic_g" in the shopping map.
       const pantryQuantityByKey: Record<string, number> = {};
       for (const pantryItem of pantryRows) {
-        const key = `${normalize(pantryItem.name)}_${normalize(pantryItem.unit)}`;
-        pantryQuantityByKey[key] = (pantryQuantityByKey[key] ?? 0) + Number(pantryItem.quantity || 0);
+        const converted = convertToShoppableUnit(
+          pantryItem.name,
+          Number(pantryItem.quantity || 0),
+          pantryItem.unit,
+        );
+        const key = `${normalize(pantryItem.name)}_${normalize(converted.unit)}`;
+        pantryQuantityByKey[key] = (pantryQuantityByKey[key] ?? 0) + converted.quantity;
       }
 
       const listItems = Object.entries(ingredientMap)
-        .map(([key, val]) => {
+        .map(([_, val]) => {
           const needed = Number(val.quantity || 0);
-          const alreadyInPantry = pantryQuantityByKey[key] ?? 0;
-          const remaining = Math.ceil(Math.max(0, needed - alreadyInPantry) * 10) / 10;
+          const alreadyInPantry = pantryQuantityByKey[
+            `${normalize(val.name)}_${normalize(val.unit)}`
+          ] ?? 0;
+          const remaining = Math.max(0, needed - alreadyInPantry);
+          if (remaining <= 0) return null;
           return {
             shopping_list_id: '',
             name: val.name.charAt(0).toUpperCase() + val.name.slice(1),
-            quantity: remaining,
+            quantity: roundForShopping(remaining, val.unit),
             unit: val.unit,
             category: val.category,
             is_purchased: false,
             recipe_source_ids: val.recipeIds,
           };
         })
-        .filter((item) => item.quantity > 0);
+        .filter((item): item is NonNullable<typeof item> => item !== null && item.quantity > 0);
 
       if (listItems.length === 0) {
         Alert.alert('Nothing to buy', 'Your pantry already covers this plan. No shopping list was created.');
@@ -563,6 +966,61 @@ export default function MealPlanScreen() {
                           style={{ marginTop: Spacing.sm }}
                         />
                       )}
+                      <View style={styles.feedbackRow}>
+                        <TouchableOpacity
+                          style={[styles.feedbackChip, { borderColor: colors.border }]}
+                          onPress={() => logPreferenceFeedback({ mealItem: meal, feedbackType: 'liked' })}
+                          disabled={feedbackLoadingId === meal.id}
+                        >
+                          <Text style={[styles.feedbackText, { color: colors.text }]}>Like</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={[styles.feedbackChip, { borderColor: colors.border }]}
+                          onPress={() =>
+                            logPreferenceFeedback({
+                              mealItem: meal,
+                              feedbackType: 'disliked',
+                              reason: "don't like taste",
+                            })
+                          }
+                          disabled={feedbackLoadingId === meal.id}
+                        >
+                          <Text style={[styles.feedbackText, { color: colors.text }]}>Dislike</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={[styles.feedbackChip, { borderColor: colors.border }]}
+                          onPress={() =>
+                            logPreferenceFeedback({
+                              mealItem: meal,
+                              feedbackType: 'swapped',
+                              reason: 'swapped for another option',
+                            })
+                          }
+                          disabled={feedbackLoadingId === meal.id}
+                        >
+                          <Text style={[styles.feedbackText, { color: colors.text }]}>Swap</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={[styles.feedbackChip, { borderColor: colors.border }]}
+                          onPress={() => logPreferenceFeedback({ mealItem: meal, feedbackType: 'cooked' })}
+                          disabled={feedbackLoadingId === meal.id}
+                        >
+                          <Text style={[styles.feedbackText, { color: colors.text }]}>Cooked</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={[styles.feedbackChip, { borderColor: colors.border }]}
+                          onPress={() =>
+                            logPreferenceFeedback({
+                              mealItem: meal,
+                              feedbackType: 'skipped',
+                              reason: 'skipped meal',
+                            })
+                          }
+                          disabled={feedbackLoadingId === meal.id}
+                        >
+                          <Text style={[styles.feedbackText, { color: colors.text }]}>Skipped</Text>
+                        </TouchableOpacity>
+                      </View>
                     </Card>
                   );
                 })}
@@ -624,6 +1082,14 @@ const styles = StyleSheet.create({
   mealType: { fontSize: FontSize.xs, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5 },
   mealTitle: { fontSize: FontSize.md, fontWeight: '600', marginTop: 2 },
   mealMeta: { fontSize: FontSize.sm, marginTop: 2 },
+  feedbackRow: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.xs, marginTop: Spacing.sm },
+  feedbackChip: {
+    borderWidth: 1,
+    borderRadius: BorderRadius.full,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 4,
+  },
+  feedbackText: { fontSize: FontSize.xs, fontWeight: '600' },
   emptyContainer: { flex: 1, justifyContent: 'center' },
   generatingOverlay: {
     position: 'absolute',

@@ -49,7 +49,7 @@ function useProtectedRoute() {
         router.replace('/(auth)/onboarding');
       }
     } else if (session && isOnboarded && inAuthGroup) {
-      router.replace('/(tabs)');
+      router.replace('/(tabs)/plan');
     }
   }, [session, isLoading, isOnboarded, isDemoMode, segments]);
 }

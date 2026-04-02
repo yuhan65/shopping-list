@@ -8,7 +8,7 @@ export default function NotFoundScreen() {
   return (
     <View style={styles.container}>
       <Text style={styles.title}>Page Not Found</Text>
-      <Button title="Go Home" onPress={() => router.replace('/(tabs)')} />
+      <Button title="Go Home" onPress={() => router.replace('/(tabs)/plan' as any)} />
     </View>
   );
 }

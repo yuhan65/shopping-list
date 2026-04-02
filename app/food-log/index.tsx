@@ -1,19 +1,9 @@
 /**
- * Food Log screen — modal for logging what you actually ate.
- * Supports taking a photo (AI analyzes it), selecting a meal type,
- * and recording whether the meal followed the plan or deviated.
- * Opens from the Today tab when you tap "Log Meal" on a slot.
+ * Food Log screen — logs what was eaten for planned/unplanned meals.
+ * Manual mode is intentionally simple: status, what you ate (if deviated), and fullness.
  */
 import React, { useState } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  TouchableOpacity,
-  TextInput,
-  Alert,
-} from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, Alert } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useThemeColors } from '@/hooks/useColorScheme';
 import { Spacing, FontSize, FontFamily, BorderRadius } from '@/constants/Spacing';
@@ -31,12 +21,22 @@ const MEAL_TYPES: { key: MealType; label: string }[] = [
   { key: 'snack', label: 'Snack' },
 ];
 
+const FULLNESS_LEVELS = [
+  { key: 'not_full', label: 'Not full' },
+  { key: 'lightly_full', label: 'Lightly full' },
+  { key: 'satisfied', label: 'Satisfied' },
+  { key: 'very_full', label: 'Very full' },
+];
+
 export default function FoodLogScreen() {
   const colors = useThemeColors();
   const router = useRouter();
   const params = useLocalSearchParams<{
     meal_type?: string;
     meal_plan_item_id?: string;
+    mode?: 'planned' | 'unplanned';
+    manual?: string;
+    photo?: string;
   }>();
 
   const user = useAuthStore((s) => s.user);
@@ -44,28 +44,36 @@ export default function FoodLogScreen() {
   const localInsert = useLocalDataStore((s) => s.insert);
   const queryClient = useQueryClient();
 
-  const [mealType, setMealType] = useState<MealType>(
-    (params.meal_type as MealType) || 'lunch'
-  );
+  const logMode = params.mode === 'unplanned' ? 'unplanned' : 'planned';
+  const isManualEntry = params.manual === '1';
+  const isPlannedLog = logMode === 'planned' && !!params.meal_plan_item_id;
+
+  const [mealType, setMealType] = useState<MealType>((params.meal_type as MealType) || 'lunch');
   const [description, setDescription] = useState('');
   const [status, setStatus] = useState<FoodLogStatus>('on_track');
-  const [photoTaken, setPhotoTaken] = useState(false);
+  const [photoTaken, setPhotoTaken] = useState(params.photo === '1');
+  const [fullness, setFullness] = useState('');
   const [loading, setLoading] = useState(false);
 
-  // Estimated macros (in a real app, AI would analyze the photo)
-  const [calories, setCalories] = useState('');
-  const [protein, setProtein] = useState('');
-  const [carbs, setCarbs] = useState('');
-  const [fat, setFat] = useState('');
-
   async function handleTakePhoto() {
-    // Navigate to camera for food photo, then come back
     setPhotoTaken(true);
-    router.push('/camera?mode=food-log' as any);
+    const query = [`mode=food-log`, `meal_type=${mealType}`];
+    if (params.meal_plan_item_id) query.push(`meal_plan_item_id=${params.meal_plan_item_id}`);
+    router.push((`/camera?${query.join('&')}`) as any);
   }
 
   async function handleSave() {
-    if (!description.trim() && !photoTaken) {
+    if (isManualEntry && !fullness) {
+      Alert.alert('Add fullness', 'Please select how full you are.');
+      return;
+    }
+
+    if (isManualEntry && status === 'deviated' && !description.trim()) {
+      Alert.alert('Add details', 'Please tell us what you ate.');
+      return;
+    }
+
+    if (!isManualEntry && !description.trim() && !photoTaken) {
       Alert.alert('Add details', 'Please describe what you ate or take a photo.');
       return;
     }
@@ -79,23 +87,61 @@ export default function FoodLogScreen() {
         meal_plan_item_id: params.meal_plan_item_id || null,
         image_url: photoTaken ? 'photo://placeholder' : null,
         actual_recipe_id: null,
-        description: description.trim() || null,
+        description: isManualEntry && status !== 'deviated' ? null : (description.trim() || null),
         status,
-        calories: calories ? parseFloat(calories) : null,
-        protein_g: protein ? parseFloat(protein) : null,
-        carbs_g: carbs ? parseFloat(carbs) : null,
-        fat_g: fat ? parseFloat(fat) : null,
-        ai_notes: null,
+        calories: null,
+        protein_g: null,
+        carbs_g: null,
+        fat_g: null,
+        ai_notes: fullness ? `fullness:${fullness}` : null,
       };
 
       if (isDemoMode) {
         localInsert('food_logs', logData);
+        if (params.meal_plan_item_id) {
+          localInsert('meal_feedback', {
+            meal_plan_item_id: params.meal_plan_item_id,
+            user_id: user!.id,
+            feedback_type: status === 'on_track' ? 'cooked' : status === 'skipped' ? 'skipped' : 'swapped',
+            reason: status === 'deviated' ? 'logged as deviated in food log' : null,
+          });
+        }
+        localInsert('user_preference_signals', {
+          user_id: user!.id,
+          signal_type:
+            status === 'on_track' ? 'meal_cooked' : status === 'skipped' ? 'meal_skipped' : 'meal_swapped_out',
+          entity_type: isPlannedLog ? 'meal_plan_item' : 'meal_type',
+          entity_key: params.meal_plan_item_id || mealType,
+          weight: 1,
+          metadata: { source: 'food_log', status, meal_type: mealType, mode: logMode, fullness },
+        });
       } else {
         const { error } = await supabase.from('food_logs').insert(logData);
         if (error) throw error;
+        if (params.meal_plan_item_id) {
+          const { error: feedbackError } = await supabase.from('meal_feedback').insert({
+            meal_plan_item_id: params.meal_plan_item_id,
+            user_id: user!.id,
+            feedback_type: status === 'on_track' ? 'cooked' : status === 'skipped' ? 'skipped' : 'swapped',
+            reason: status === 'deviated' ? 'logged as deviated in food log' : null,
+          });
+          if (feedbackError) throw feedbackError;
+        }
+        const { error: signalError } = await supabase.from('user_preference_signals').insert({
+          user_id: user!.id,
+          signal_type:
+            status === 'on_track' ? 'meal_cooked' : status === 'skipped' ? 'meal_skipped' : 'meal_swapped_out',
+          entity_type: isPlannedLog ? 'meal_plan_item' : 'meal_type',
+          entity_key: params.meal_plan_item_id || mealType,
+          weight: 1,
+          metadata: { source: 'food_log', status, meal_type: mealType, mode: logMode, fullness },
+        });
+        if (signalError) throw signalError;
       }
 
       queryClient.invalidateQueries({ queryKey: ['food_logs'] });
+      queryClient.invalidateQueries({ queryKey: ['meal_feedback'] });
+      queryClient.invalidateQueries({ queryKey: ['user_preference_signals'] });
       router.back();
     } catch (err: any) {
       Alert.alert('Error', err.message);
@@ -109,94 +155,81 @@ export default function FoodLogScreen() {
       style={[styles.container, { backgroundColor: colors.background }]}
       contentContainerStyle={styles.content}
     >
-      {/* Top bar */}
       <View style={styles.topBar}>
         <TouchableOpacity onPress={() => router.back()}>
           <Icon name="arrow-left" size={24} color={colors.text} />
         </TouchableOpacity>
-        <Text style={[styles.topTitle, { color: colors.text }]}>Log Meal</Text>
+        <Text style={[styles.topTitle, { color: colors.text }]}>
+          {isManualEntry ? 'Log Meal Manually' : logMode === 'unplanned' ? 'Log Unplanned Meal' : 'Log Meal'}
+        </Text>
         <View style={{ width: 24 }} />
       </View>
 
-      {/* Meal type selector */}
-      <Text style={[styles.sectionLabel, { color: colors.textSecondary }]}>
-        MEAL TYPE
-      </Text>
-      <View style={styles.mealTypeRow}>
-        {MEAL_TYPES.map((mt) => (
+      {logMode === 'unplanned' && !isManualEntry && (
+        <Card style={styles.contextCard}>
+          <Text style={[styles.contextText, { color: colors.textSecondary }]}>
+            You can log what you actually ate, even if it differs from your plan.
+          </Text>
+        </Card>
+      )}
+
+      {!isManualEntry && (
+        <>
+          <Text style={[styles.sectionLabel, { color: colors.textSecondary }]}>MEAL TYPE</Text>
+          <View style={styles.mealTypeRow}>
+            {MEAL_TYPES.map((mt) => (
+              <TouchableOpacity
+                key={mt.key}
+                style={[
+                  styles.mealTypeChip,
+                  {
+                    backgroundColor: mealType === mt.key ? colors.text : colors.surfaceSecondary,
+                    borderColor: mealType === mt.key ? colors.text : colors.border,
+                  },
+                ]}
+                onPress={() => setMealType(mt.key)}
+              >
+                <Text
+                  style={[
+                    styles.mealTypeText,
+                    { color: mealType === mt.key ? colors.background : colors.text },
+                  ]}
+                >
+                  {mt.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </>
+      )}
+
+      {!isManualEntry && (
+        <>
+          <Text style={[styles.sectionLabel, { color: colors.textSecondary }]}>PHOTO</Text>
           <TouchableOpacity
-            key={mt.key}
             style={[
-              styles.mealTypeChip,
+              styles.photoArea,
               {
-                backgroundColor: mealType === mt.key ? colors.text : colors.surfaceSecondary,
-                borderColor: mealType === mt.key ? colors.text : colors.border,
+                backgroundColor: colors.surfaceSecondary,
+                borderColor: colors.border,
               },
+              photoTaken && { borderColor: colors.success },
             ]}
-            onPress={() => setMealType(mt.key)}
+            onPress={handleTakePhoto}
           >
-            <Text
-              style={[
-                styles.mealTypeText,
-                { color: mealType === mt.key ? colors.background : colors.text },
-              ]}
-            >
-              {mt.label}
+            <Icon
+              name={photoTaken ? 'check-circle' : 'camera'}
+              size={32}
+              color={photoTaken ? colors.success : colors.tabIconDefault}
+            />
+            <Text style={[styles.photoText, { color: photoTaken ? colors.success : colors.textSecondary }]}>
+              {photoTaken ? 'Photo captured' : 'Take a photo of your meal'}
             </Text>
           </TouchableOpacity>
-        ))}
-      </View>
+        </>
+      )}
 
-      {/* Photo section */}
-      <Text style={[styles.sectionLabel, { color: colors.textSecondary }]}>
-        PHOTO
-      </Text>
-      <TouchableOpacity
-        style={[
-          styles.photoArea,
-          {
-            backgroundColor: colors.surfaceSecondary,
-            borderColor: colors.border,
-          },
-          photoTaken && { borderColor: colors.success },
-        ]}
-        onPress={handleTakePhoto}
-      >
-        <Icon
-          name={photoTaken ? 'check-circle' : 'camera'}
-          size={32}
-          color={photoTaken ? colors.success : colors.tabIconDefault}
-        />
-        <Text style={[styles.photoText, { color: photoTaken ? colors.success : colors.textSecondary }]}>
-          {photoTaken ? 'Photo captured' : 'Take a photo of your meal'}
-        </Text>
-        <Text style={[styles.photoSubtext, { color: colors.tabIconDefault }]}>
-          {photoTaken ? 'AI will analyze the nutritional content' : 'AI will estimate calories and macros'}
-        </Text>
-      </TouchableOpacity>
-
-      {/* Description */}
-      <Text style={[styles.sectionLabel, { color: colors.textSecondary }]}>
-        DESCRIPTION
-      </Text>
-      <TextInput
-        style={[
-          styles.descInput,
-          { color: colors.text, backgroundColor: colors.surfaceSecondary, borderColor: colors.border },
-        ]}
-        placeholder="What did you eat? e.g., Grilled chicken salad with avocado..."
-        placeholderTextColor={colors.tabIconDefault}
-        value={description}
-        onChangeText={setDescription}
-        multiline
-        numberOfLines={3}
-        textAlignVertical="top"
-      />
-
-      {/* Status */}
-      <Text style={[styles.sectionLabel, { color: colors.textSecondary }]}>
-        DID YOU FOLLOW THE PLAN?
-      </Text>
+      <Text style={[styles.sectionLabel, { color: colors.textSecondary }]}>DID YOU FOLLOW THE PLAN?</Text>
       <View style={styles.statusRow}>
         {[
           { key: 'on_track' as FoodLogStatus, label: 'On Track', color: colors.success },
@@ -227,80 +260,86 @@ export default function FoodLogScreen() {
         ))}
       </View>
 
-      {/* Manual macro entry (optional, for when AI is not available) */}
-      <TouchableOpacity>
-        <Card style={styles.macroCard}>
-          <Text style={[styles.macroCardLabel, { color: colors.textSecondary }]}>
-            NUTRITION (OPTIONAL)
-          </Text>
-          <Text style={[styles.macroCardDesc, { color: colors.textSecondary }]}>
-            AI estimates from your photo, or enter manually
-          </Text>
-          <View style={styles.macroInputRow}>
-            <View style={styles.macroInputItem}>
-              <Text style={[styles.macroInputLabel, { color: colors.textSecondary }]}>KCAL</Text>
-              <TextInput
-                style={[styles.macroInput, { color: colors.text, borderColor: colors.border }]}
-                value={calories}
-                onChangeText={setCalories}
-                keyboardType="numeric"
-                placeholder="—"
-                placeholderTextColor={colors.tabIconDefault}
-              />
-            </View>
-            <View style={styles.macroInputItem}>
-              <Text style={[styles.macroInputLabel, { color: colors.textSecondary }]}>PROTEIN</Text>
-              <TextInput
-                style={[styles.macroInput, { color: colors.text, borderColor: colors.border }]}
-                value={protein}
-                onChangeText={setProtein}
-                keyboardType="numeric"
-                placeholder="—"
-                placeholderTextColor={colors.tabIconDefault}
-              />
-            </View>
-            <View style={styles.macroInputItem}>
-              <Text style={[styles.macroInputLabel, { color: colors.textSecondary }]}>CARBS</Text>
-              <TextInput
-                style={[styles.macroInput, { color: colors.text, borderColor: colors.border }]}
-                value={carbs}
-                onChangeText={setCarbs}
-                keyboardType="numeric"
-                placeholder="—"
-                placeholderTextColor={colors.tabIconDefault}
-              />
-            </View>
-            <View style={styles.macroInputItem}>
-              <Text style={[styles.macroInputLabel, { color: colors.textSecondary }]}>FAT</Text>
-              <TextInput
-                style={[styles.macroInput, { color: colors.text, borderColor: colors.border }]}
-                value={fat}
-                onChangeText={setFat}
-                keyboardType="numeric"
-                placeholder="—"
-                placeholderTextColor={colors.tabIconDefault}
-              />
-            </View>
-          </View>
-        </Card>
-      </TouchableOpacity>
+      {!isManualEntry && (
+        <>
+          <Text style={[styles.sectionLabel, { color: colors.textSecondary }]}>DESCRIPTION</Text>
+          <TextInput
+            style={[
+              styles.descInput,
+              { color: colors.text, backgroundColor: colors.surfaceSecondary, borderColor: colors.border },
+            ]}
+            placeholder="What did you eat?"
+            placeholderTextColor={colors.tabIconDefault}
+            value={description}
+            onChangeText={setDescription}
+            multiline
+            numberOfLines={3}
+            textAlignVertical="top"
+          />
+        </>
+      )}
 
-      {/* Deviation note */}
+      {isManualEntry && status === 'deviated' && (
+        <>
+          <Text style={[styles.sectionLabel, { color: colors.textSecondary }]}>WHAT DID YOU EAT?</Text>
+          <TextInput
+            style={[
+              styles.descInput,
+              { color: colors.text, backgroundColor: colors.surfaceSecondary, borderColor: colors.border },
+            ]}
+            placeholder="What did you eat?"
+            placeholderTextColor={colors.tabIconDefault}
+            value={description}
+            onChangeText={setDescription}
+            multiline
+            numberOfLines={3}
+            textAlignVertical="top"
+          />
+        </>
+      )}
+
+      {isManualEntry && (
+        <>
+          <Text style={[styles.sectionLabel, { color: colors.textSecondary }]}>HOW FULL ARE YOU?</Text>
+          <View style={styles.fullnessRow}>
+            {FULLNESS_LEVELS.map((level) => (
+              <TouchableOpacity
+                key={level.key}
+                style={[
+                  styles.fullnessChip,
+                  {
+                    backgroundColor: fullness === level.key ? colors.text : colors.surfaceSecondary,
+                    borderColor: fullness === level.key ? colors.text : colors.border,
+                  },
+                ]}
+                onPress={() => setFullness(level.key)}
+              >
+                <Text
+                  style={[
+                    styles.fullnessText,
+                    { color: fullness === level.key ? colors.background : colors.text },
+                  ]}
+                >
+                  {level.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </>
+      )}
+
       {status === 'deviated' && (
         <Card style={[styles.deviationNote, { backgroundColor: colors.warningLight }]}>
           <View style={styles.deviationHeader}>
             <Icon name="sparkles" size={16} color={colors.warning} />
-            <Text style={[styles.deviationLabel, { color: colors.warning }]}>
-              AI WILL ADJUST
-            </Text>
+            <Text style={[styles.deviationLabel, { color: colors.warning }]}>AI WILL ADJUST</Text>
           </View>
           <Text style={[styles.deviationText, { color: colors.text }]}>
-            After logging, AI will analyze the difference from your plan and suggest adjustments to your remaining meals for the day.
+            After logging, AI will analyze the difference from your plan and adjust your day.
           </Text>
         </Card>
       )}
 
-      {/* Save button */}
       <Button
         title="Save Food Log"
         onPress={handleSave}
@@ -323,6 +362,8 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.lg,
   },
   topTitle: { fontSize: FontSize.lg, fontWeight: '600' },
+  contextCard: { marginBottom: Spacing.sm },
+  contextText: { fontSize: FontSize.sm, lineHeight: 20 },
 
   sectionLabel: {
     fontSize: FontSize.xs,
@@ -332,7 +373,6 @@ const styles = StyleSheet.create({
     marginTop: Spacing.lg,
   },
 
-  // Meal type
   mealTypeRow: {
     flexDirection: 'row',
     gap: Spacing.sm,
@@ -346,7 +386,6 @@ const styles = StyleSheet.create({
   },
   mealTypeText: { fontSize: FontSize.sm, fontWeight: '600' },
 
-  // Photo
   photoArea: {
     alignItems: 'center',
     justifyContent: 'center',
@@ -357,9 +396,7 @@ const styles = StyleSheet.create({
     gap: Spacing.sm,
   },
   photoText: { fontSize: FontSize.md, fontWeight: '600' },
-  photoSubtext: { fontSize: FontSize.xs },
 
-  // Description
   descInput: {
     borderWidth: 1,
     borderRadius: BorderRadius.md,
@@ -368,7 +405,6 @@ const styles = StyleSheet.create({
     minHeight: 80,
   },
 
-  // Status
   statusRow: {
     flexDirection: 'row',
     gap: Spacing.sm,
@@ -386,31 +422,19 @@ const styles = StyleSheet.create({
   statusDot: { width: 8, height: 8, borderRadius: 4 },
   statusChipText: { fontSize: FontSize.xs, fontWeight: '600' },
 
-  // Macro input
-  macroCard: { marginTop: Spacing.lg },
-  macroCardLabel: {
-    fontSize: FontSize.xs,
-    fontWeight: '700',
-    letterSpacing: 1.5,
-    marginBottom: 2,
-  },
-  macroCardDesc: { fontSize: FontSize.xs, marginBottom: Spacing.md },
-  macroInputRow: {
+  fullnessRow: {
     flexDirection: 'row',
     gap: Spacing.sm,
+    flexWrap: 'wrap',
   },
-  macroInputItem: { flex: 1, gap: 4 },
-  macroInputLabel: { fontSize: 9, fontWeight: '700', letterSpacing: 0.5, textAlign: 'center' },
-  macroInput: {
+  fullnessChip: {
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 8,
     borderWidth: 1,
-    borderRadius: BorderRadius.sm,
-    paddingVertical: 6,
-    textAlign: 'center',
-    fontSize: FontSize.md,
-    fontWeight: '600',
+    borderRadius: BorderRadius.full,
   },
+  fullnessText: { fontSize: FontSize.sm, fontWeight: '600' },
 
-  // Deviation note
   deviationNote: { marginTop: Spacing.md },
   deviationHeader: {
     flexDirection: 'row',
